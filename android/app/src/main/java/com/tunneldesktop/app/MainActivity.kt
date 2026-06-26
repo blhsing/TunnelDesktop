@@ -6,6 +6,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
@@ -13,6 +16,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
@@ -23,6 +27,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import org.json.JSONArray
 import org.json.JSONObject
 import relaycore.Relaycore
 import java.net.Inet6Address
@@ -37,7 +42,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rawAllow: EditText
     private lateinit var publicIpv6: TextView
     private lateinit var status: TextView
+    private lateinit var bundleState: TextView
     private lateinit var logs: TextView
+
+    private val ink = Color.rgb(31, 41, 55)
+    private val muted = Color.rgb(93, 104, 116)
+    private val page = Color.rgb(246, 248, 247)
+    private val panel = Color.rgb(255, 255, 255)
+    private val line = Color.rgb(211, 219, 224)
+    private val accent = Color.rgb(47, 111, 115)
+    private val accentSoft = Color.rgb(227, 244, 242)
+    private val success = Color.rgb(43, 125, 82)
+    private val danger = Color.rgb(172, 67, 67)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,73 +69,121 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildUi() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(28, 28, 28, 28)
+        val root = ScrollView(this).apply {
+            setBackgroundColor(page)
+            isFillViewport = true
         }
-        relayAddr = edit("Relay hostname:port", prefs.getString("relay_addr", "phone.example.com:443") ?: "")
-        relayHosts = edit("Certificate names", prefs.getString("relay_hosts", "phone.example.com") ?: "")
-        agentProxy = edit("Work agent HTTP proxy (optional)", savedAgentProxy())
-        rawAllow = edit("Hotspot allowlist", prefs.getString("raw_allow", "192.168.43.0/24") ?: "")
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+        }
+        root.addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        relayAddr = edit("phone.example.com:443 or [ipv6]:443", prefs.getString("relay_addr", "phone.example.com:443") ?: "")
+        relayHosts = edit("phone.example.com, 2001:db8::42", prefs.getString("relay_hosts", "phone.example.com") ?: "")
+        agentProxy = edit("Blank for direct, or http://proxy.example:8080", savedAgentProxy())
+        rawAllow = edit("192.168.43.0/24", prefs.getString("raw_allow", "192.168.43.0/24") ?: "")
         publicIpv6 = TextView(this).apply {
-            textSize = 14f
+            textSize = 13f
+            setTextColor(ink)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(accentSoft, Color.TRANSPARENT)
             setTextIsSelectable(true)
         }
-        status = TextView(this).apply { textSize = 14f }
-
-        val row1 = row()
-        row1.addView(button("Generate") { generateIdentity() })
-        row1.addView(button("Start") {
-            startForegroundService(Intent(this, RelayService::class.java))
-            prefs.edit().putBoolean("running", true).apply()
-            refreshStatus()
-        })
-        row1.addView(button("Stop") {
-            stopService(Intent(this, RelayService::class.java))
-            prefs.edit().putBoolean("running", false).apply()
-            refreshStatus()
-        })
-
-        val row2 = row()
-        row2.addView(button("Agent") { shareBundle("agent.tnl", prefs.getString("agent_bundle", "") ?: "") })
-        row2.addView(button("Client") { shareBundle("client.tnl", prefs.getString("client_bundle", "") ?: "") })
-        row2.addView(button("Battery") { requestBatteryExemption() })
-
-        val row3 = row()
-        row3.addView(button("Unrestricted") { openAppBatterySettings() })
-        row3.addView(button("VPN") { requestVpnPersistence() })
-        row3.addView(button("Status") { refreshStatus() })
-
-        val row4 = row()
-        row4.addView(button("Detect IPv6") { refreshPublicIpv6() })
-        row4.addView(button("Use IPv6") { applyPublicIpv6() })
-        row4.addView(button("Copy IPv6") { copyPublicIpv6() })
+        status = TextView(this).apply {
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        bundleState = TextView(this).apply {
+            textSize = 13f
+            setTextColor(muted)
+        }
 
         val autostart = CheckBox(this).apply {
             text = "Start on boot"
             isChecked = prefs.getBoolean("autostart", true)
+            setTextColor(ink)
+            textSize = 14f
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean("autostart", checked).apply()
             }
         }
         logs = TextView(this).apply {
             textSize = 12f
-            text = Relaycore.recentLogs().trim('[', ']', '"').replace("\\n", "\n")
+            setTextColor(ink)
+            setTextIsSelectable(true)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            text = recentLogText()
         }
-        val scroll = ScrollView(this).apply { addView(logs) }
+        val logScroll = ScrollView(this).apply {
+            background = rounded(Color.rgb(249, 250, 251), line)
+            isVerticalScrollBarEnabled = true
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(180))
+            addView(logs)
+        }
 
-        root.addView(relayAddr)
-        root.addView(relayHosts)
-        root.addView(agentProxy)
-        root.addView(rawAllow)
-        root.addView(publicIpv6)
-        root.addView(row1)
-        root.addView(row2)
-        root.addView(row3)
-        root.addView(row4)
-        root.addView(autostart)
-        root.addView(status)
-        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        content.addView(title("TunnelDesktop Relay"))
+        addSpaced(content, status, 10)
+        addSpaced(
+            content,
+            section(
+                "Relay Endpoint",
+                field("Relay address", relayAddr),
+                publicIpv6,
+                actionRow(
+                    button("Detect IPv6") { refreshPublicIpv6() },
+                    button("Use IPv6") { applyPublicIpv6() }
+                ),
+                actionRow(
+                    button("Copy IPv6") { copyPublicIpv6() },
+                    button("Refresh") { refreshStatus() }
+                )
+            )
+        )
+        addSpaced(
+            content,
+            section(
+                "Bundles",
+                field("Certificate names", relayHosts),
+                field("Work agent HTTP proxy", agentProxy),
+                field("Hotspot allowlist", rawAllow),
+                button("Generate bundles", primary = true) { generateIdentity() },
+                bundleState,
+                actionRow(
+                    button("Export agent") { shareBundle("agent.tnl", prefs.getString("agent_bundle", "") ?: "") },
+                    button("Export client") { shareBundle("client.tnl", prefs.getString("client_bundle", "") ?: "") }
+                )
+            )
+        )
+        addSpaced(
+            content,
+            section(
+                "Relay Service",
+                actionRow(
+                    button("Start relay", primary = true) {
+                        startForegroundService(Intent(this, RelayService::class.java))
+                        prefs.edit().putBoolean("running", true).apply()
+                        refreshStatus()
+                    },
+                    button("Stop relay", danger = true) {
+                        stopService(Intent(this, RelayService::class.java))
+                        prefs.edit().putBoolean("running", false).apply()
+                        refreshStatus()
+                    }
+                ),
+                autostart,
+                actionRow(
+                    button("Battery") { requestBatteryExemption() },
+                    button("Unrestricted") { openAppBatterySettings() }
+                ),
+                button("VPN persistence") { requestVpnPersistence() }
+            )
+        )
+        addSpaced(
+            content,
+            section("Activity Log", logScroll)
+        )
         setContentView(root)
     }
 
@@ -145,6 +209,7 @@ class MainActivity : AppCompatActivity() {
                 .putBoolean("autostart", true)
                 .apply()
             refreshStatus("Generated bundles")
+            Toast.makeText(this, "Bundles generated", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             val message = e.message ?: e.javaClass.simpleName
             refreshStatus("Generate failed: $message")
@@ -169,13 +234,17 @@ class MainActivity : AppCompatActivity() {
         val hasConfig = !prefs.getString("config", "").isNullOrBlank()
         val hasAgent = !prefs.getString("agent_bundle", "").isNullOrBlank()
         val hasClient = !prefs.getString("client_bundle", "").isNullOrBlank()
-        status.text = listOf(
-            "relay=${Relaycore.status()}",
-            "config=$hasConfig",
-            "agent=$hasAgent",
-            "client=$hasClient",
+        val relay = Relaycore.status()
+        val running = relay == "running"
+        status.text = if (running) "Relay running" else "Relay stopped"
+        status.setTextColor(if (running) success else muted)
+        status.background = rounded(if (running) Color.rgb(230, 246, 237) else Color.rgb(239, 242, 245), Color.TRANSPARENT)
+        bundleState.text = listOf(
+            if (hasConfig) "Relay config ready" else "Relay config missing",
+            if (hasAgent) "Agent bundle ready" else "Agent bundle missing",
+            if (hasClient) "Client bundle ready" else "Client bundle missing",
             extra
-        ).filter { it.isNotBlank() }.joinToString("  ")
+        ).filter { it.isNotBlank() }.joinToString("\n")
     }
 
     private fun refreshPublicIpv6() {
@@ -293,25 +362,111 @@ class MainActivity : AppCompatActivity() {
 
     private data class PublicIpv6(val interfaceName: String, val address: String)
 
+    private fun recentLogText(): String {
+        return try {
+            val values = JSONArray(Relaycore.recentLogs())
+            (0 until values.length()).joinToString("\n") { values.getString(it) }
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun title(text: String): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 26f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }
+
+    private fun section(titleText: String, vararg children: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(14))
+            background = rounded(panel, line)
+            elevation = dp(1).toFloat()
+            addView(TextView(this@MainActivity).apply {
+                text = titleText
+                textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(ink)
+            })
+            children.forEach { addSpaced(this, it, 10) }
+        }
+
+    private fun field(labelText: String, input: EditText): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = labelText
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(muted)
+            })
+            addSpaced(this, input, 4)
+        }
+
     private fun edit(hintText: String, value: String): EditText =
         EditText(this).apply {
             hint = hintText
             setText(value)
             setSingleLine(true)
+            textSize = 14f
+            setTextColor(ink)
+            setHintTextColor(Color.rgb(130, 140, 150))
+            setPadding(dp(12), 0, dp(12), 0)
+            minHeight = dp(46)
+            background = rounded(Color.WHITE, line)
         }
 
-    private fun row(): LinearLayout =
+    private fun actionRow(vararg buttons: Button): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            buttons.forEachIndexed { index, button ->
+                val params = LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                    if (index > 0) marginStart = dp(8)
+                }
+                addView(button, params)
+            }
         }
 
-    private fun button(text: String, action: () -> Unit): Button =
+    private fun button(text: String, primary: Boolean = false, danger: Boolean = false, action: () -> Unit): Button =
         Button(this).apply {
             this.text = text
+            isAllCaps = false
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(if (primary || danger) Color.WHITE else accent)
+            background = when {
+                danger -> rounded(this@MainActivity.danger, Color.TRANSPARENT)
+                primary -> rounded(accent, Color.TRANSPARENT)
+                else -> rounded(Color.WHITE, accent)
+            }
+            setPadding(dp(8), 0, dp(8), 0)
+            minHeight = dp(44)
             setOnClickListener { action() }
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
+
+    private fun addSpaced(parent: LinearLayout, child: View, top: Int = 12) {
+        val requestedHeight = child.layoutParams?.height ?: ViewGroup.LayoutParams.WRAP_CONTENT
+        val params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, requestedHeight).apply {
+            topMargin = dp(top)
+        }
+        parent.addView(child, params)
+    }
+
+    private fun rounded(fill: Int, stroke: Int, radius: Int = 8): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(fill)
+            cornerRadius = dp(radius).toFloat()
+            if (stroke != Color.TRANSPARENT) {
+                setStroke(dp(1), stroke)
+            }
+        }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun requestNotifications() {
         if (Build.VERSION.SDK_INT >= 33) {
