@@ -28,6 +28,24 @@ func DialContext(ctx context.Context, targetAddr, proxySpec string) (net.Conn, e
 	return dialHTTPConnect(ctx, targetAddr, proxyURL)
 }
 
+func ProxySpecForLog(proxySpec string) string {
+	spec := strings.TrimSpace(proxySpec)
+	if spec == "" || strings.EqualFold(spec, "direct") {
+		return "direct"
+	}
+	if strings.EqualFold(spec, "env") || strings.EqualFold(spec, "auto") {
+		return spec
+	}
+	if !strings.Contains(spec, "://") {
+		spec = "http://" + spec
+	}
+	proxyURL, err := url.Parse(spec)
+	if err != nil || proxyURL.Host == "" {
+		return proxySpec
+	}
+	return proxyURLForLog(proxyURL)
+}
+
 func resolveProxyURL(targetAddr, proxySpec string) (*url.URL, error) {
 	spec := strings.TrimSpace(proxySpec)
 	if strings.EqualFold(spec, "env") || strings.EqualFold(spec, "auto") {
@@ -53,6 +71,7 @@ func resolveProxyURL(targetAddr, proxySpec string) (*url.URL, error) {
 
 func dialHTTPConnect(ctx context.Context, targetAddr string, proxyURL *url.URL) (net.Conn, error) {
 	targetAddr = CanonicalHostPort(targetAddr)
+	proxyLabel := proxyURLForLog(proxyURL)
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", proxyURL.Host)
 	if err != nil {
@@ -91,10 +110,20 @@ func dialHTTPConnect(ctx context.Context, targetAddr string, proxyURL *url.URL) 
 		_ = resp.Body.Close()
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("proxy CONNECT failed: %s", resp.Status)
+		return nil, fmt.Errorf("proxy CONNECT %s via %s failed: %s", targetAddr, proxyLabel, resp.Status)
 	}
 	ok = true
 	return conn, nil
+}
+
+func proxyURLForLog(proxyURL *url.URL) string {
+	if proxyURL == nil {
+		return "direct"
+	}
+	if proxyURL.Scheme == "" {
+		return proxyURL.Host
+	}
+	return proxyURL.Scheme + "://" + proxyURL.Host
 }
 
 func CanonicalHostPort(addr string) string {

@@ -460,6 +460,7 @@ func selfTest(parent context.Context, cfg config) error {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	var d net.Dialer
+	log.Printf("self-test local RDP target: %s", cfg.RDPAddr)
 	rdpConn, err := d.DialContext(ctx, "tcp", cfg.RDPAddr)
 	if err != nil {
 		return fmt.Errorf("local RDP target %s is not reachable: %w", cfg.RDPAddr, err)
@@ -469,9 +470,10 @@ func selfTest(parent context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
+	log.Printf("self-test relay target: %s via %s", cfg.RelayAddr, tunnel.ProxySpecForLog(cfg.Proxy))
 	rawConn, err := tunnel.DialContext(ctx, cfg.RelayAddr, cfg.Proxy)
 	if err != nil {
-		return fmt.Errorf("proxy/direct dial to relay failed: %w", err)
+		return fmt.Errorf("relay connection test failed: %w. %s", err, relayDialHint(err, cfg))
 	}
 	tlsConn := tls.Client(rawConn, tlsConfig)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
@@ -483,6 +485,29 @@ func selfTest(parent context.Context, cfg config) error {
 		return fmt.Errorf("token auth failed: %w", err)
 	}
 	return nil
+}
+
+func relayDialHint(err error, cfg config) string {
+	errText := strings.ToLower(err.Error())
+	if strings.Contains(errText, "proxy connect") {
+		return fmt.Sprintf(
+			"The proxy returned an HTTP error before TLS started. Confirm that the proxy allows CONNECT to %s, that it can reach the relay host or IPv6 address, and that port %s is permitted. If the work network allows direct outbound connections, regenerate the agent bundle with Work agent HTTP proxy left blank.",
+			cfg.RelayAddr,
+			relayPortForHint(cfg.RelayAddr),
+		)
+	}
+	if strings.Contains(errText, "dial proxy") {
+		return fmt.Sprintf("Confirm that the configured proxy %s is reachable from this PC.", tunnel.ProxySpecForLog(cfg.Proxy))
+	}
+	return "Confirm that the Android relay is running, the relay address is current, and the selected relay port is reachable from this PC."
+}
+
+func relayPortForHint(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return "the configured relay port"
+	}
+	return port
 }
 
 func handleStream(ctx context.Context, stream net.Conn, rdpAddr string) {

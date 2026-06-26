@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var publicIpv6: TextView
     private lateinit var privateIp: TextView
     private lateinit var status: TextView
+    private lateinit var connectionState: TextView
     private lateinit var bundleState: TextView
     private lateinit var logs: TextView
     private lateinit var relayToggle: Button
@@ -144,6 +145,13 @@ class MainActivity : AppCompatActivity() {
             typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(12), dp(8), dp(12), dp(8))
         }
+        connectionState = TextView(this).apply {
+            textSize = 13f
+            setTextColor(ink)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(Color.rgb(245, 247, 250), Color.TRANSPARENT)
+            setTextIsSelectable(true)
+        }
         bundleState = TextView(this).apply {
             textSize = 13f
             setTextColor(muted)
@@ -218,6 +226,7 @@ class MainActivity : AppCompatActivity() {
             section(
                 "Relay Service",
                 relayToggle,
+                connectionState,
                 autostart,
                 actionRow(
                     button("Battery") { requestBatteryExemption() },
@@ -347,8 +356,16 @@ class MainActivity : AppCompatActivity() {
         val configPort = configPortOrNull(config)
         val stalePort = configPort != null && configPort != selectedPort
         val relay = Relaycore.status()
-        val requestedRunning = prefs.getBoolean("running", false)
-        val lastError = prefs.getString("last_error", "") ?: ""
+        var requestedRunning = prefs.getBoolean("running", false)
+        val storedLastError = prefs.getString("last_error", "") ?: ""
+        val lastError = if (relay == "running") "" else storedLastError
+        if (relay == "running" && (storedLastError.isNotBlank() || !requestedRunning)) {
+            prefs.edit()
+                .putBoolean("running", true)
+                .remove("last_error")
+                .apply()
+            requestedRunning = true
+        }
         val statusModel = when {
             relay == "running" -> StatusModel("Relay running", success, Color.rgb(230, 246, 237))
             requestedRunning && lastError.isBlank() -> StatusModel("Relay starting", accent, accentSoft)
@@ -358,6 +375,7 @@ class MainActivity : AppCompatActivity() {
         status.text = statusModel.text
         status.setTextColor(statusModel.textColor)
         status.background = rounded(statusModel.backgroundColor, Color.TRANSPARENT)
+        refreshConnectionStatus()
         updateRelayToggle(relay, requestedRunning, lastError)
         bundleState.text = listOf(
             if (hasConfig) "Relay config ready" else "Relay config missing",
@@ -397,6 +415,88 @@ class MainActivity : AppCompatActivity() {
             relayToggle.text = "Start relay"
             styleButton(relayToggle, primary = true)
         }
+    }
+
+    private fun refreshConnectionStatus() {
+        connectionState.text = try {
+            formatConnectionStatus(JSONObject(Relaycore.connectionStatus()))
+        } catch (e: Exception) {
+            "Connections: unavailable (${e.message ?: e.javaClass.simpleName})"
+        }
+    }
+
+    private fun formatConnectionStatus(snapshot: JSONObject): String {
+        val relayState = snapshot.optString("status", "unknown")
+        val tlsListenAddr = snapshot.optString("tls_listen_addr", "")
+        val rawListenAddr = snapshot.optString("raw_rdp_listen_addr", "")
+        val activeHome = snapshot.optInt("home_active", 0)
+        val tlsHome = snapshot.optInt("home_tls_active", 0)
+        val rawHome = snapshot.optInt("home_raw_rdp_active", 0)
+        val totalHome = snapshot.optLong("home_total_connections", 0)
+        return listOf(
+            "Relay core: $relayState",
+            workAgentLine(snapshot),
+            "Home side: $activeHome active ($tlsHome secure client, $rawHome LAN RDP), $totalHome total",
+            lastHomeLine(snapshot),
+            if (tlsListenAddr.isNotBlank()) "TLS listener: $tlsListenAddr" else "",
+            if (rawListenAddr.isNotBlank()) "LAN RDP listener: $rawListenAddr" else ""
+        ).filter { it.isNotBlank() }.joinToString("\n")
+    }
+
+    private fun workAgentLine(snapshot: JSONObject): String {
+        if (snapshot.optBoolean("agent_connected", false)) {
+            val remote = snapshot.optString("agent_remote_addr", "")
+            val connectedAt = formatStatusTime(snapshot.optString("agent_connected_at", ""))
+            return listOf(
+                "Work agent: connected",
+                if (remote.isNotBlank()) "from $remote" else "",
+                if (connectedAt.isNotBlank()) "since $connectedAt" else ""
+            ).filter { it.isNotBlank() }.joinToString(" ")
+        }
+        val lastRemote = snapshot.optString("agent_last_remote_addr", "")
+        val lastSeen = formatStatusTime(snapshot.optString("agent_last_disconnected_at", ""))
+        return if (lastRemote.isNotBlank() || lastSeen.isNotBlank()) {
+            listOf(
+                "Work agent: disconnected",
+                if (lastRemote.isNotBlank()) "last from $lastRemote" else "",
+                if (lastSeen.isNotBlank()) "at $lastSeen" else ""
+            ).filter { it.isNotBlank() }.joinToString(" ")
+        } else {
+            "Work agent: not connected"
+        }
+    }
+
+    private fun lastHomeLine(snapshot: JSONObject): String {
+        val label = homeLabel(snapshot.optString("last_home_label", ""))
+        val remote = snapshot.optString("last_home_remote_addr", "")
+        val connectedAt = formatStatusTime(snapshot.optString("last_home_connected_at", ""))
+        val disconnectedAt = formatStatusTime(snapshot.optString("last_home_disconnected_at", ""))
+        if (label.isBlank() && remote.isBlank()) return ""
+        val state = if (disconnectedAt.isNotBlank()) {
+            "last ended $disconnectedAt"
+        } else if (connectedAt.isNotBlank()) {
+            "connected $connectedAt"
+        } else {
+            ""
+        }
+        return listOf(
+            "Last home side:",
+            label,
+            if (remote.isNotBlank()) "from $remote" else "",
+            state
+        ).filter { it.isNotBlank() }.joinToString(" ")
+    }
+
+    private fun homeLabel(label: String): String =
+        when (label) {
+            "tls client" -> "secure client"
+            "raw RDP" -> "LAN RDP"
+            else -> label
+        }
+
+    private fun formatStatusTime(value: String): String {
+        if (value.isBlank()) return ""
+        return value.replace("T", " ").removeSuffix("Z") + " UTC"
     }
 
     private fun refreshPublicIpv6() {

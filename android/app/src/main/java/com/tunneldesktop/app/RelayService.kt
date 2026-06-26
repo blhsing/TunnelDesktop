@@ -25,6 +25,15 @@ class RelayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return try {
+            if (Relaycore.status() == "running") {
+                prefs().edit()
+                    .putBoolean("running", true)
+                    .remove("last_error")
+                    .apply()
+                updateNotification("Running")
+                WatchdogReceiver.schedule(this)
+                return START_STICKY
+            }
             val config = prefs().getString("config", "") ?: ""
             if (config.isBlank()) {
                 throw IllegalStateException("Generate bundles before starting the relay")
@@ -42,6 +51,15 @@ class RelayService : Service() {
             START_STICKY
         } catch (e: Exception) {
             val message = e.message ?: e.javaClass.simpleName
+            if (Relaycore.status() == "running" || message == "relay is running") {
+                prefs().edit()
+                    .putBoolean("running", true)
+                    .remove("last_error")
+                    .apply()
+                updateNotification("Running")
+                WatchdogReceiver.schedule(this)
+                return START_STICKY
+            }
             prefs().edit()
                 .putBoolean("running", false)
                 .putString("last_error", message)

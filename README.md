@@ -26,6 +26,7 @@ Raw RDP is never exposed on the public internet listener. Public traffic uses TL
 - [Configuration And Bundle Format](#configuration-and-bundle-format)
 - [Troubleshooting](#troubleshooting)
   - [Agent Service Does Not Start](#agent-service-does-not-start)
+  - [Self-Test Shows Proxy CONNECT 503](#self-test-shows-proxy-connect-503)
   - [Client Connects But RDP Fails](#client-connects-but-rdp-fails)
   - [Android Relay Stops](#android-relay-stops)
   - [Gradle Cannot Download Dependencies](#gradle-cannot-download-dependencies)
@@ -135,6 +136,7 @@ It:
 - Shows detected public IPv6 candidates and the bracketed relay address the work agent can use when there is no stable hostname.
 - Shows detected private IPv4 candidates and the `IP:3389` address that a home PC can use on the hotspot/private LAN path.
 - Pre-fills the hotspot raw-RDP allowlist from the selected private IPv4 network.
+- Shows live work-agent and home-side connection status, including active secure-client and LAN-RDP counts.
 - Provides basic setup, status, log, and export UI.
 
 ### Work Agent
@@ -396,6 +398,19 @@ Common causes:
 - Phone is not reachable on cellular IPv6.
 - Local RDP is disabled or not listening on `127.0.0.1:3389`.
 
+### Self-Test Shows Proxy CONNECT 503
+
+If the configurator log shows `proxy CONNECT ... failed: 503 Service Unavailable`, the agent reached the configured HTTP proxy and the proxy returned an error before TLS started.
+
+Check:
+
+- The relay address in the self-test log is current.
+- The Android relay is running and listening on that relay port.
+- The work proxy allows `CONNECT` to the relay host and port, for example `8443`.
+- The work proxy can reach the relay host format shown in the bundle. Some proxies do not support raw IPv6 literals even when they support DNS hostnames.
+
+The `Work agent HTTP proxy` field writes the proxy into `agent.tnl` for HTTP `CONNECT`. It is not a plain HTTP relay mode. If the work network allows direct outbound connections, regenerate bundles with that field blank and reinstall the updated `agent.tnl`.
+
 ### Client Connects But RDP Fails
 
 Check:
@@ -415,7 +430,7 @@ Check:
 - Battery mode is unrestricted.
 - OEM autostart/protected-app allowlisting is enabled.
 - Phone is on charger.
-- Watchdog is enabled by leaving `Start on boot` or `running` state active.
+- Watchdog restarts the relay only while the app's relay state is running. `Start on boot` controls boot startup, not manual stop behavior.
 - Optional VPN persistence is enabled only if needed.
 
 ### Gradle Cannot Download Dependencies

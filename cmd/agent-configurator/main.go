@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -227,6 +228,11 @@ func (a *app) runSelfTest() {
 	}
 	go func() {
 		a.appendLog("Running self-test with %s", bundlePath)
+		if summary, err := bundleSummaryForLog(bundlePath); err != nil {
+			a.appendLog("Bundle summary unavailable: %v", err)
+		} else {
+			a.appendLog("%s", summary)
+		}
 		cmd := exec.Command(exePath, "-self-test", "-bundle", bundlePath)
 		var output bytes.Buffer
 		cmd.Stdout = &output
@@ -511,6 +517,43 @@ func validateInstallInputs(opts actionOptions) error {
 		return fmt.Errorf("bundle role is %q, want agent", bundle.Role)
 	}
 	return nil
+}
+
+func bundleSummaryForLog(bundlePath string) (string, error) {
+	data, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return "", err
+	}
+	bundle, err := relaycore.DecodeBundle(string(data))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"Bundle: role=%s relay=%s proxy=%s server_name=%s created=%s",
+		bundle.Role,
+		bundle.RelayAddr,
+		proxySpecForLog(bundle.Proxy),
+		bundle.ServerName,
+		bundle.CreatedAt.Format(time.RFC3339),
+	), nil
+}
+
+func proxySpecForLog(proxySpec string) string {
+	spec := strings.TrimSpace(proxySpec)
+	if spec == "" || strings.EqualFold(spec, "direct") {
+		return "direct"
+	}
+	if strings.EqualFold(spec, "env") || strings.EqualFold(spec, "auto") {
+		return spec
+	}
+	if !strings.Contains(spec, "://") {
+		spec = "http://" + spec
+	}
+	proxyURL, err := url.Parse(spec)
+	if err != nil || proxyURL.Host == "" {
+		return proxySpec
+	}
+	return proxyURL.Scheme + "://" + proxyURL.Host
 }
 
 func serviceConfig(exePath string, args []string) mgr.Config {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/yamux"
 
@@ -32,6 +33,37 @@ type Relay struct {
 	agent     *yamux.Session
 	agentWake chan struct{}
 	status    string
+
+	agentRemoteAddr         string
+	agentConnectedAt        time.Time
+	agentLastRemoteAddr     string
+	agentLastDisconnectedAt time.Time
+	activeTLSHome           int
+	activeRawHome           int
+	totalHomeConnections    uint64
+	lastHomeLabel           string
+	lastHomeRemoteAddr      string
+	lastHomeConnectedAt     time.Time
+	lastHomeDisconnectedAt  time.Time
+}
+
+type StatusSnapshot struct {
+	Status                  string `json:"status"`
+	TLSListenAddr           string `json:"tls_listen_addr,omitempty"`
+	RawRDPListenAddr        string `json:"raw_rdp_listen_addr,omitempty"`
+	AgentConnected          bool   `json:"agent_connected"`
+	AgentRemoteAddr         string `json:"agent_remote_addr,omitempty"`
+	AgentConnectedAt        string `json:"agent_connected_at,omitempty"`
+	AgentLastRemoteAddr     string `json:"agent_last_remote_addr,omitempty"`
+	AgentLastDisconnectedAt string `json:"agent_last_disconnected_at,omitempty"`
+	HomeActive              int    `json:"home_active"`
+	HomeTLSActive           int    `json:"home_tls_active"`
+	HomeRawRDPActive        int    `json:"home_raw_rdp_active"`
+	HomeTotalConnections    uint64 `json:"home_total_connections"`
+	LastHomeLabel           string `json:"last_home_label,omitempty"`
+	LastHomeRemoteAddr      string `json:"last_home_remote_addr,omitempty"`
+	LastHomeConnectedAt     string `json:"last_home_connected_at,omitempty"`
+	LastHomeDisconnectedAt  string `json:"last_home_disconnected_at,omitempty"`
 }
 
 func New(cfg Config, log tunnel.LogFunc) (*Relay, error) {
@@ -132,6 +164,37 @@ func (r *Relay) Status() string {
 	return r.status
 }
 
+func (r *Relay) Snapshot() StatusSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tlsListenAddr := r.cfg.ListenAddr
+	if r.tlsListener != nil {
+		tlsListenAddr = r.tlsListener.Addr().String()
+	}
+	rawRDPListenAddr := r.cfg.RawRDPAddr
+	if r.rawListener != nil {
+		rawRDPListenAddr = r.rawListener.Addr().String()
+	}
+	return StatusSnapshot{
+		Status:                  r.status,
+		TLSListenAddr:           tlsListenAddr,
+		RawRDPListenAddr:        rawRDPListenAddr,
+		AgentConnected:          r.agent != nil && !r.agent.IsClosed(),
+		AgentRemoteAddr:         r.agentRemoteAddr,
+		AgentConnectedAt:        formatSnapshotTime(r.agentConnectedAt),
+		AgentLastRemoteAddr:     r.agentLastRemoteAddr,
+		AgentLastDisconnectedAt: formatSnapshotTime(r.agentLastDisconnectedAt),
+		HomeActive:              r.activeTLSHome + r.activeRawHome,
+		HomeTLSActive:           r.activeTLSHome,
+		HomeRawRDPActive:        r.activeRawHome,
+		HomeTotalConnections:    r.totalHomeConnections,
+		LastHomeLabel:           r.lastHomeLabel,
+		LastHomeRemoteAddr:      r.lastHomeRemoteAddr,
+		LastHomeConnectedAt:     formatSnapshotTime(r.lastHomeConnectedAt),
+		LastHomeDisconnectedAt:  formatSnapshotTime(r.lastHomeDisconnectedAt),
+	}
+}
+
 func (r *Relay) setStatus(status string) {
 	r.mu.Lock()
 	r.status = status
@@ -221,7 +284,7 @@ func (r *Relay) serveAgent(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	r.registerAgent(session)
+	r.registerAgent(session, conn.RemoteAddr().String())
 	r.log("agent connected from %s", conn.RemoteAddr())
 
 	select {
@@ -244,6 +307,9 @@ func (r *Relay) serveHomeConn(homeConn net.Conn, label string) {
 		_ = homeConn.Close()
 		return
 	}
+	remoteAddr := homeConn.RemoteAddr().String()
+	r.beginHomeConn(label, remoteAddr)
+	defer r.finishHomeConn(label, remoteAddr)
 
 	agentStream, err := r.openAgentStream()
 	if err != nil {
@@ -256,10 +322,12 @@ func (r *Relay) serveHomeConn(homeConn net.Conn, label string) {
 	r.log("closed %s connection from %s", label, homeConn.RemoteAddr())
 }
 
-func (r *Relay) registerAgent(session *yamux.Session) {
+func (r *Relay) registerAgent(session *yamux.Session, remoteAddr string) {
 	r.mu.Lock()
 	old := r.agent
 	r.agent = session
+	r.agentRemoteAddr = remoteAddr
+	r.agentConnectedAt = time.Now().UTC()
 	close(r.agentWake)
 	r.agentWake = make(chan struct{})
 	r.mu.Unlock()
@@ -272,7 +340,41 @@ func (r *Relay) clearAgent(session *yamux.Session) {
 	r.mu.Lock()
 	if r.agent == session {
 		r.agent = nil
+		r.agentLastRemoteAddr = r.agentRemoteAddr
+		r.agentLastDisconnectedAt = time.Now().UTC()
+		r.agentRemoteAddr = ""
+		r.agentConnectedAt = time.Time{}
 	}
+	r.mu.Unlock()
+}
+
+func (r *Relay) beginHomeConn(label, remoteAddr string) {
+	r.mu.Lock()
+	if label == "raw RDP" {
+		r.activeRawHome++
+	} else {
+		r.activeTLSHome++
+	}
+	r.totalHomeConnections++
+	r.lastHomeLabel = label
+	r.lastHomeRemoteAddr = remoteAddr
+	r.lastHomeConnectedAt = time.Now().UTC()
+	r.lastHomeDisconnectedAt = time.Time{}
+	r.mu.Unlock()
+}
+
+func (r *Relay) finishHomeConn(label, remoteAddr string) {
+	r.mu.Lock()
+	if label == "raw RDP" {
+		if r.activeRawHome > 0 {
+			r.activeRawHome--
+		}
+	} else if r.activeTLSHome > 0 {
+		r.activeTLSHome--
+	}
+	r.lastHomeLabel = label
+	r.lastHomeRemoteAddr = remoteAddr
+	r.lastHomeDisconnectedAt = time.Now().UTC()
 	r.mu.Unlock()
 }
 
@@ -322,4 +424,11 @@ func (r *Relay) recover(scope string) {
 	if recovered := recover(); recovered != nil {
 		r.log("panic in %s: %v", scope, recovered)
 	}
+}
+
+func formatSnapshotTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }

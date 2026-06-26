@@ -11,7 +11,7 @@ class WatchdogReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val storage = if (Build.VERSION.SDK_INT >= 24) context.createDeviceProtectedStorageContext() else context
         val prefs = storage.getSharedPreferences("relay", Context.MODE_PRIVATE)
-        if (prefs.getBoolean("autostart", false) || prefs.getBoolean("running", false)) {
+        if (prefs.getBoolean("running", false)) {
             context.startForegroundService(Intent(context, RelayService::class.java))
         }
         schedule(context)

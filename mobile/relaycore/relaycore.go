@@ -22,6 +22,10 @@ func Status() string {
 	return core.Status()
 }
 
+func ConnectionStatus() string {
+	return core.ConnectionStatus()
+}
+
 func SetLogCallback(callback LogCallback) {
 	core.SetLogCallback(callback)
 }

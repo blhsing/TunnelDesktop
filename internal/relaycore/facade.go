@@ -80,6 +80,25 @@ func Status() string {
 	return relay.Status()
 }
 
+func ConnectionStatus() string {
+	defaultRelay.Lock()
+	relay := defaultRelay.relay
+	cfg := defaultRelay.cfg
+	defaultRelay.Unlock()
+	var snapshot StatusSnapshot
+	if relay == nil {
+		snapshot = StatusSnapshot{
+			Status:           "stopped",
+			TLSListenAddr:    cfg.ListenAddr,
+			RawRDPListenAddr: cfg.RawRDPAddr,
+		}
+	} else {
+		snapshot = relay.Snapshot()
+	}
+	data, _ := json.Marshal(snapshot)
+	return string(data)
+}
+
 func SetLogCallback(callback LogCallback) {
 	defaultRelay.Lock()
 	defaultRelay.callback = callback
