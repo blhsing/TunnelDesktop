@@ -13,8 +13,7 @@ app.UseWebSockets(new WebSocketOptions
 });
 
 app.MapGet("/", () => Results.Redirect("/relay/"));
-app.MapGet("/relay", () => Results.Redirect("/relay/"));
-app.MapGet("/relay/", () => Results.Text(DashboardHtml(), "text/html; charset=utf-8"));
+app.MapGet("/relay", () => Results.Text(DashboardHtml(), "text/html; charset=utf-8"));
 app.MapGet("/relay/health", () => Results.Json(new
 {
     status = "ok",
