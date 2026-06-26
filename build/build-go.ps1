@@ -57,14 +57,20 @@ function Ensure-Rsrc {
 
 function Build-WindowsResources {
     Ensure-Rsrc
+    & (Join-Path $PSScriptRoot 'generate-client-icon.ps1')
+    if (-not $?) { throw 'client icon generation failed' }
     $resources = @(
         @{ Manifest = 'cmd/agent-configurator/app.manifest'; Output = 'cmd/agent-configurator/rsrc_windows_amd64.syso'; Name = 'agent configurator' },
-        @{ Manifest = 'cmd/client/app.manifest'; Output = 'cmd/client/rsrc_windows_amd64.syso'; Name = 'home app' }
+        @{ Manifest = 'cmd/client/app.manifest'; Output = 'cmd/client/rsrc_windows_amd64.syso'; Name = 'home app'; Icon = 'cmd/client/app.ico' }
     )
     foreach ($resource in $resources) {
         $manifest = Join-Path $root $resource.Manifest
         $output = Join-Path $root $resource.Output
-        rsrc -manifest $manifest -arch amd64 -o $output
+        $rsrcArgs = @('-manifest', $manifest, '-arch', 'amd64', '-o', $output)
+        if ($resource.ContainsKey('Icon')) {
+            $rsrcArgs += @('-ico', (Join-Path $root $resource.Icon))
+        }
+        rsrc @rsrcArgs
         if ($LASTEXITCODE -ne 0) { throw "rsrc failed for $($resource.Name) manifest" }
     }
 }

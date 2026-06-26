@@ -33,6 +33,9 @@ const (
 	defaultRelayURL         = "https://test-officialwebsite.azurewebsites.net/relay/workdesk"
 	defaultListenAddr       = "127.0.0.1:3390"
 	legacyDefaultListenAddr = "127.0.0.1:3389"
+	appIconResourceID       = 2
+	statusTileWidth         = 150
+	rdpStatusTileWidth      = 230
 )
 
 type config struct {
@@ -164,7 +167,7 @@ func (a *clientApp) run(smokeTest bool) error {
 		Title:    appTitle(),
 		MinSize:  Size{Width: 780, Height: 540},
 		Size:     Size{Width: 900, Height: 650},
-		Icon:     walk.IconApplication(),
+		Icon:     appIcon(),
 		Layout:   VBox{Margins: Margins{Left: 12, Top: 12, Right: 12, Bottom: 12}, Spacing: 9},
 		Visible:  !smokeTest,
 		Children: []Widget{
@@ -187,10 +190,10 @@ func (a *clientApp) run(smokeTest bool) error {
 				Title:  "Status",
 				Layout: Grid{Columns: 4, Spacing: 8},
 				Children: []Widget{
-					statusTile("Tunnel", &a.tunnelStatus, "Stopped"),
-					statusTile("Work Agent", &a.workStatus, "Checking"),
-					statusTile("Home App", &a.homeStatus, "Connecting"),
-					statusTile("RDP", &a.rdpStatus, defaultListenAddr),
+					statusTile("Tunnel", &a.tunnelStatus, "Stopped", statusTileWidth),
+					statusTile("Work Agent", &a.workStatus, "Checking", statusTileWidth),
+					statusTile("Home App", &a.homeStatus, "Connecting", statusTileWidth),
+					statusTile("RDP", &a.rdpStatus, defaultListenAddr, rdpStatusTileWidth),
 				},
 			},
 			GroupBox{
@@ -266,17 +269,19 @@ func (a *clientApp) run(smokeTest bool) error {
 	return nil
 }
 
-func statusTile(title string, assignTo **walk.Label, initial string) Widget {
+func statusTile(title string, assignTo **walk.Label, initial string, width int) Widget {
 	return Composite{
-		Layout: VBox{Margins: Margins{Left: 8, Top: 8, Right: 8, Bottom: 8}, Spacing: 4},
+		MinSize:       Size{Width: width, Height: 66},
+		StretchFactor: 1,
+		Layout:        VBox{Margins: Margins{Left: 8, Top: 8, Right: 8, Bottom: 8}, Spacing: 4},
 		Children: []Widget{
-			Label{Text: title, TextColor: walk.RGB(93, 104, 116), Font: Font{Bold: true}},
+			Label{Text: title, TextColor: walk.RGB(93, 104, 116), Font: Font{Bold: true}, MinSize: Size{Width: width - 16}},
 			Label{
 				AssignTo:      assignTo,
 				Text:          initial,
 				Font:          Font{PointSize: 13, Bold: true},
 				EllipsisMode:  EllipsisEnd,
-				MinSize:       Size{Height: 26},
+				MinSize:       Size{Width: width - 16, Height: 26},
 				TextColor:     walk.RGB(31, 41, 55),
 				TextAlignment: AlignNear,
 			},
@@ -290,7 +295,7 @@ func (a *clientApp) setupNotifyIcon() error {
 		return err
 	}
 	a.ni = ni
-	if err := ni.SetIcon(walk.IconApplication()); err != nil {
+	if err := ni.SetIcon(appIcon()); err != nil {
 		return err
 	}
 	if err := ni.SetToolTip("TunnelDesktop Home"); err != nil {
@@ -333,6 +338,14 @@ func trayAction(text string, action func()) *walk.Action {
 	_ = item.SetText(text)
 	item.Triggered().Attach(action)
 	return item
+}
+
+func appIcon() *walk.Icon {
+	icon, err := walk.NewIconFromResourceId(appIconResourceID)
+	if err == nil {
+		return icon
+	}
+	return walk.IconApplication()
 }
 
 func (a *clientApp) showWindow() {
