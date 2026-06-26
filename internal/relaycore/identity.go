@@ -78,6 +78,10 @@ func GenerateIdentity(opts SetupOptions) (SetupResult, error) {
 	if err := opts.validate(); err != nil {
 		return SetupResult{}, err
 	}
+	listenAddr, err := listenAddrFromRelayAddr(opts.RelayAddr)
+	if err != nil {
+		return SetupResult{}, err
+	}
 	serverName := opts.RelayHosts[0]
 	token, err := randomToken()
 	if err != nil {
@@ -106,7 +110,7 @@ func GenerateIdentity(opts SetupOptions) (SetupResult, error) {
 	now := time.Now().UTC()
 	caPEM := string(certPEM(caDER))
 	relayCfg := Config{
-		ListenAddr:          ":443",
+		ListenAddr:          listenAddr,
 		RawRDPAddr:          opts.RawRDPAddr,
 		RawAllowlist:        opts.RawAllowlist,
 		DisableRawAllowlist: false,
@@ -350,6 +354,17 @@ func hostFromAddr(addr string) string {
 		return ""
 	}
 	return host
+}
+
+func listenAddrFromRelayAddr(addr string) (string, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("relay_addr must include host and port: %w", err)
+	}
+	if port == "" {
+		return "", fmt.Errorf("relay_addr must include a port")
+	}
+	return ":" + port, nil
 }
 
 func contains(values []string, target string) bool {

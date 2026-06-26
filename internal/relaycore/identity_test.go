@@ -22,6 +22,9 @@ func TestGenerateIdentityProducesUsableBundles(t *testing.T) {
 	if err := relayCfg.Validate(); err != nil {
 		t.Fatalf("relay config validate: %v", err)
 	}
+	if relayCfg.ListenAddr != ":8443" {
+		t.Fatalf("relay listen addr = %q, want :8443", relayCfg.ListenAddr)
+	}
 	agent, err := DecodeBundle(result.AgentBundle)
 	if err != nil {
 		t.Fatalf("DecodeBundle(agent): %v", err)
@@ -58,5 +61,15 @@ func TestGenerateIdentityDefaultsBlankProxyToDirect(t *testing.T) {
 	}
 	if agent.ServerName != "2001:db8::42" {
 		t.Fatalf("agent server name = %q", agent.ServerName)
+	}
+}
+
+func TestGenerateIdentityRequiresRelayPort(t *testing.T) {
+	_, err := GenerateIdentity(SetupOptions{
+		RelayAddr:  "phone.example.com",
+		RelayHosts: []string{"phone.example.com"},
+	})
+	if err == nil {
+		t.Fatal("GenerateIdentity succeeded without relay port")
 	}
 }

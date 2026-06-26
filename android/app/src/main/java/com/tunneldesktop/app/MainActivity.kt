@@ -13,6 +13,8 @@ import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
@@ -44,6 +46,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var bundleState: TextView
     private lateinit var logs: TextView
+    private lateinit var relayToggle: Button
+    private val statusHandler = Handler(Looper.getMainLooper())
+    private val statusRefresh = object : Runnable {
+        override fun run() {
+            refreshStatus()
+            statusHandler.postDelayed(this, 2000)
+        }
+    }
+    private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "running" || key == "last_error" || key == "config") {
+            runOnUiThread { refreshStatus() }
+        }
+    }
 
     private val ink = Color.rgb(31, 41, 55)
     private val muted = Color.rgb(93, 104, 116)
@@ -66,6 +81,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
         refreshStatus()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
+        refreshStatus()
+        statusHandler.removeCallbacks(statusRefresh)
+        statusHandler.postDelayed(statusRefresh, 2000)
+    }
+
+    override fun onPause() {
+        statusHandler.removeCallbacks(statusRefresh)
+        prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+        super.onPause()
     }
 
     private fun buildUi() {
@@ -116,6 +145,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             text = recentLogText()
         }
+        relayToggle = button("Start relay", primary = true) {
+            toggleRelay()
+        }
         val logScroll = ScrollView(this).apply {
             background = rounded(Color.rgb(249, 250, 251), line)
             isVerticalScrollBarEnabled = true
@@ -160,14 +192,7 @@ class MainActivity : AppCompatActivity() {
             content,
             section(
                 "Relay Service",
-                actionRow(
-                    button("Start relay", primary = true) {
-                        startRelay()
-                    },
-                    button("Stop relay", danger = true) {
-                        stopRelay()
-                    }
-                ),
+                relayToggle,
                 autostart,
                 actionRow(
                     button("Battery") { requestBatteryExemption() },
@@ -225,6 +250,17 @@ class MainActivity : AppCompatActivity() {
         }, "Export $name"))
     }
 
+    private fun toggleRelay() {
+        val relay = Relaycore.status()
+        val requestedRunning = prefs.getBoolean("running", false)
+        val lastError = prefs.getString("last_error", "") ?: ""
+        if (relay == "running" || requestedRunning && lastError.isBlank()) {
+            stopRelay()
+        } else {
+            startRelay()
+        }
+    }
+
     private fun startRelay() {
         try {
             prefs.edit()
@@ -270,18 +306,36 @@ class MainActivity : AppCompatActivity() {
         val hasAgent = !prefs.getString("agent_bundle", "").isNullOrBlank()
         val hasClient = !prefs.getString("client_bundle", "").isNullOrBlank()
         val relay = Relaycore.status()
-        val running = relay == "running"
+        val requestedRunning = prefs.getBoolean("running", false)
         val lastError = prefs.getString("last_error", "") ?: ""
-        status.text = if (running) "Relay running" else "Relay stopped"
-        status.setTextColor(if (running) success else muted)
-        status.background = rounded(if (running) Color.rgb(230, 246, 237) else Color.rgb(239, 242, 245), Color.TRANSPARENT)
+        val statusModel = when {
+            relay == "running" -> StatusModel("Relay running", success, Color.rgb(230, 246, 237))
+            requestedRunning && lastError.isBlank() -> StatusModel("Relay starting", accent, accentSoft)
+            lastError.isNotBlank() -> StatusModel("Relay start failed", danger, Color.rgb(252, 232, 232))
+            else -> StatusModel("Relay stopped", muted, Color.rgb(239, 242, 245))
+        }
+        status.text = statusModel.text
+        status.setTextColor(statusModel.textColor)
+        status.background = rounded(statusModel.backgroundColor, Color.TRANSPARENT)
+        updateRelayToggle(relay, requestedRunning, lastError)
         bundleState.text = listOf(
             if (hasConfig) "Relay config ready" else "Relay config missing",
             if (hasAgent) "Agent bundle ready" else "Agent bundle missing",
             if (hasClient) "Client bundle ready" else "Client bundle missing",
+            if (requestedRunning && relay != "running" && lastError.isBlank()) "Waiting for relay service to report running" else "",
             if (lastError.isNotBlank()) "Last start error: $lastError" else "",
             extra
         ).filter { it.isNotBlank() }.joinToString("\n")
+    }
+
+    private fun updateRelayToggle(relay: String, requestedRunning: Boolean, lastError: String) {
+        if (relay == "running" || requestedRunning && lastError.isBlank()) {
+            relayToggle.text = "Stop relay"
+            styleButton(relayToggle, danger = true)
+        } else {
+            relayToggle.text = "Start relay"
+            styleButton(relayToggle, primary = true)
+        }
     }
 
     private fun refreshPublicIpv6() {
@@ -411,6 +465,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private data class PublicIpv6(val interfaceName: String, val address: String)
+    private data class StatusModel(val text: String, val textColor: Int, val backgroundColor: Int)
 
     private fun recentLogText(): String {
         return try {
@@ -487,16 +542,20 @@ class MainActivity : AppCompatActivity() {
             isAllCaps = false
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(if (primary || danger) Color.WHITE else accent)
-            background = when {
-                danger -> rounded(this@MainActivity.danger, Color.TRANSPARENT)
-                primary -> rounded(accent, Color.TRANSPARENT)
-                else -> rounded(Color.WHITE, accent)
-            }
+            styleButton(this, primary, danger)
             setPadding(dp(8), 0, dp(8), 0)
             minHeight = dp(44)
             setOnClickListener { action() }
         }
+
+    private fun styleButton(button: Button, primary: Boolean = false, danger: Boolean = false) {
+        button.setTextColor(if (primary || danger) Color.WHITE else accent)
+        button.background = when {
+            danger -> rounded(this@MainActivity.danger, Color.TRANSPARENT)
+            primary -> rounded(accent, Color.TRANSPARENT)
+            else -> rounded(Color.WHITE, accent)
+        }
+    }
 
     private fun addSpaced(parent: LinearLayout, child: View, top: Int = 12) {
         val requestedHeight = child.layoutParams?.height ?: ViewGroup.LayoutParams.WRAP_CONTENT
