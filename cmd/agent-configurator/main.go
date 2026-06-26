@@ -55,17 +55,23 @@ type serviceInfo struct {
 }
 
 func main() {
+	if hasArg(os.Args[1:], "-ui-smoke-test") {
+		if err := (&app{}).run(true); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if hasElevatedAction(os.Args[1:]) {
 		runElevatedAction(os.Args[1:])
 		return
 	}
-	if err := (&app{}).run(); err != nil {
+	if err := (&app{}).run(false); err != nil {
 		windowsMessageBox(appTitle(), err.Error(), windows.MB_OK|windows.MB_ICONERROR)
 		os.Exit(1)
 	}
 }
 
-func (a *app) run() error {
+func (a *app) run(smokeTest bool) error {
 	installDir := defaultInstallDir()
 	agentPath := defaultAgentPath()
 	bundlePath := defaultBundlePath(installDir)
@@ -76,6 +82,7 @@ func (a *app) run() error {
 		MinSize:  Size{Width: 760, Height: 520},
 		Size:     Size{Width: 860, Height: 620},
 		Layout:   VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
+		Visible:  !smokeTest,
 		Children: []Widget{
 			GroupBox{
 				Title:  "Files",
@@ -119,6 +126,15 @@ func (a *app) run() error {
 	}
 	if err := window.Create(); err != nil {
 		return err
+	}
+	if smokeTest {
+		time.AfterFunc(250*time.Millisecond, func() {
+			a.mw.Synchronize(func() {
+				_ = a.mw.Close()
+			})
+		})
+		a.mw.Run()
+		return nil
 	}
 	a.refreshStatus()
 	a.appendLog("Ready.")
@@ -285,8 +301,12 @@ func (a *app) showError(err error) {
 }
 
 func hasElevatedAction(args []string) bool {
+	return hasArg(args, "-elevated-action")
+}
+
+func hasArg(args []string, name string) bool {
 	for _, arg := range args {
-		if arg == "-elevated-action" || strings.HasPrefix(arg, "-elevated-action=") {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
 			return true
 		}
 	}

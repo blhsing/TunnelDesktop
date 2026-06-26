@@ -2,6 +2,7 @@ dist/
 bin/
 *.exe
 *.aar
+*.syso
 android/app/libs/*.jar
 *.apk
 android/.gradle/

@@ -4,8 +4,41 @@ $root = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $root 'dist/bin'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
+function Ensure-Rsrc {
+    if (Get-Command rsrc -ErrorAction SilentlyContinue) {
+        return
+    }
+    $goBin = 'D:\Go\bin'
+    New-Item -ItemType Directory -Force -Path $goBin | Out-Null
+    $oldGoBin = $env:GOBIN
+    try {
+        $env:GOBIN = $goBin
+        go install github.com/akavel/rsrc@latest
+        if ($LASTEXITCODE -ne 0) { throw 'go install rsrc failed' }
+    }
+    finally {
+        if ($null -eq $oldGoBin) {
+            Remove-Item Env:\GOBIN -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:GOBIN = $oldGoBin
+        }
+    }
+    $env:PATH = "$goBin;$env:PATH"
+}
+
+function Build-AgentConfiguratorResource {
+    Ensure-Rsrc
+    $manifest = Join-Path $root 'cmd/agent-configurator/app.manifest'
+    $resource = Join-Path $root 'cmd/agent-configurator/rsrc_windows_amd64.syso'
+    rsrc -manifest $manifest -arch amd64 -o $resource
+    if ($LASTEXITCODE -ne 0) { throw 'rsrc failed for agent configurator manifest' }
+}
+
 Push-Location $root
 try {
+    Build-AgentConfiguratorResource
+
     go mod download
     if ($LASTEXITCODE -ne 0) { throw 'go mod download failed' }
     go test ./...

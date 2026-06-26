@@ -59,6 +59,7 @@ This repo has been built with:
 - JDK under `D:\Scoop\apps\temurin17-jdk\current`
 - Android SDK/NDK under `D:\Android\Sdk`
 - gomobile/gobind under `D:\Go\bin`
+- rsrc under `D:\Go\bin` for Windows GUI manifest resources
 - Gradle installed through Scoop
 
 `build-android.ps1` derives Gradle proxy settings from `HTTPS_PROXY` or `HTTP_PROXY`.
