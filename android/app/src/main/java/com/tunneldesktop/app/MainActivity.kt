@@ -29,6 +29,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.util.Collections
 
 class MainActivity : AppCompatActivity() {
     private companion object {
@@ -40,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var details: TextView
     private lateinit var commands: TextView
+    private lateinit var phoneNetwork: TextView
     private lateinit var toggle: Button
 
     private val statusHandler = Handler(Looper.getMainLooper())
@@ -99,6 +103,7 @@ class MainActivity : AppCompatActivity() {
         status = statusLabel()
         details = infoBox()
         commands = infoBox()
+        phoneNetwork = infoBox()
         toggle = button("Start", primary = true) { toggleHomeAgent() }
 
         val autostart = CheckBox(this).apply {
@@ -123,6 +128,17 @@ class MainActivity : AppCompatActivity() {
                     button("Copy URL") { copyText("TunnelDesktop relay URL", normalizedRelayUrl()) }
                 ),
                 commands
+            )
+        )
+        addSpaced(
+            content,
+            section(
+                "Phone Network",
+                phoneNetwork,
+                actionRow(
+                    button("Copy hotspot IP") { copyHotspotIp() },
+                    button("Refresh") { refreshStatus("Network refreshed") }
+                )
             )
         )
         addSpaced(
@@ -212,6 +228,7 @@ class MainActivity : AppCompatActivity() {
             "Work agent: agent.exe -relay-url $url",
             "Home client: client.exe -relay-url $url"
         ).joinToString("\n")
+        phoneNetwork.text = phoneNetworkText()
     }
 
     private fun savedRelayUrl(): String =
@@ -238,6 +255,76 @@ class MainActivity : AppCompatActivity() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
         Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun copyHotspotIp() {
+        val candidate = privateIpv4Candidates().firstOrNull()
+        if (candidate == null) {
+            Toast.makeText(this, "No hotspot IP detected", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("TunnelDesktop hotspot IP", candidate.address))
+        Toast.makeText(this, "Copied ${candidate.address}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun phoneNetworkText(): String {
+        val candidates = privateIpv4Candidates()
+        val primary = candidates.firstOrNull()
+        if (primary == null) {
+            return "Hotspot IP: not detected\nPrivate IPv4: none"
+        }
+        val others = candidates.drop(1)
+        return listOf(
+            "Hotspot IP: ${primary.address}",
+            "Interface: ${primary.interfaceName}",
+            if (others.isNotEmpty()) {
+                "Other private IPv4: " + others.joinToString(", ") { "${it.address} (${it.interfaceName})" }
+            } else {
+                ""
+            }
+        ).filter { it.isNotBlank() }.joinToString("\n")
+    }
+
+    private fun privateIpv4Candidates(): List<PrivateIp> {
+        return try {
+            Collections.list(NetworkInterface.getNetworkInterfaces())
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { iface ->
+                    iface.interfaceAddresses.mapNotNull { interfaceAddress ->
+                        val address = interfaceAddress.address
+                        if (address is Inet4Address) {
+                            val host = address.hostAddress ?: return@mapNotNull null
+                            if (isPrivateIpv4(address)) PrivateIp(iface.name, host) else null
+                        } else {
+                            null
+                        }
+                    }
+                }
+                .distinctBy { it.address }
+                .sortedWith(compareBy<PrivateIp> { privateIpRank(it.interfaceName, it.address) }.thenBy { it.interfaceName }.thenBy { it.address })
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun isPrivateIpv4(address: Inet4Address): Boolean {
+        if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isMulticastAddress) return false
+        val bytes = address.address.map { it.toInt() and 0xff }
+        return bytes[0] == 10 ||
+            bytes[0] == 172 && bytes[1] in 16..31 ||
+            bytes[0] == 192 && bytes[1] == 168
+    }
+
+    private fun privateIpRank(interfaceName: String, address: String): Int {
+        val name = interfaceName.lowercase()
+        return when {
+            name.startsWith("ap") || name.contains("hotspot") || name.startsWith("swlan") -> 0
+            address.startsWith("192.168.43.") || address.startsWith("192.168.203.") -> 1
+            name.startsWith("wlan") || name.startsWith("wifi") -> 2
+            name.startsWith("rndis") || name.startsWith("eth") || name.contains("usb") -> 3
+            else -> 4
+        }
     }
 
     private fun title(text: String): TextView =
@@ -385,4 +472,5 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 24) createDeviceProtectedStorageContext() else this
 
     private data class StatusModel(val text: String, val textColor: Int, val backgroundColor: Int)
+    private data class PrivateIp(val interfaceName: String, val address: String)
 }

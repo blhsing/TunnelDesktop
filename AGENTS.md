@@ -13,6 +13,7 @@ TunnelDesktop is a Go + Android + .NET project for an outbound-only RDP rendezvo
 - URL-only WebSocket clients should use standard proxy environment variables by default; explicit `-proxy direct` is the bypass path.
 - The Azure relay should stay stateless with respect to credentials; pair sockets by room name unless a stronger explicit authentication design is added.
 - The Android app must not listen for public relay traffic or raw RDP in the normal architecture.
+- The Android UI should show the phone's detected hotspot/private IPv4 address for setup visibility.
 - `cmd/agent` must remain Windows-service-first. Console mode is debug-only.
 - `cmd/agent-configurator` owns the native Windows setup/configurator GUI for the work agent service.
 - `cmd/client` must remain tray-first. Console mode is debug-only.

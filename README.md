@@ -209,6 +209,7 @@ The Android app:
 - Stores a shared relay room URL.
 - Keeps an outbound `home-agent` WebSocket for relay presence/status.
 - Copies the matching work-agent and home-client commands.
+- Shows and copies the phone's detected hotspot/private IPv4 address.
 - Uses a foreground service, boot receiver, watchdog receiver, and optional persistence controls.
 
 ### Standalone Relay Harness
