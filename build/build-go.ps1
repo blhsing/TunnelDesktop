@@ -2,7 +2,35 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $root 'dist/bin'
+$tmp = Join-Path $root 'dist/tmp'
+$goCache = Join-Path $root 'dist/gocache'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
+New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+New-Item -ItemType Directory -Force -Path $goCache | Out-Null
+
+$savedEnv = @{
+    GOTMPDIR = $env:GOTMPDIR
+    GOCACHE = $env:GOCACHE
+    TEMP = $env:TEMP
+    TMP = $env:TMP
+}
+$env:GOTMPDIR = $tmp
+$env:GOCACHE = $goCache
+$env:TEMP = $tmp
+$env:TMP = $tmp
+
+function Restore-EnvValue {
+    param(
+        [string] $Name,
+        [string] $Value
+    )
+    if ($null -eq $Value) {
+        Remove-Item "Env:\$Name" -ErrorAction SilentlyContinue
+    }
+    else {
+        Set-Item "Env:\$Name" $Value
+    }
+}
 
 function Ensure-Rsrc {
     if (Get-Command rsrc -ErrorAction SilentlyContinue) {
@@ -27,17 +55,23 @@ function Ensure-Rsrc {
     $env:PATH = "$goBin;$env:PATH"
 }
 
-function Build-AgentConfiguratorResource {
+function Build-WindowsResources {
     Ensure-Rsrc
-    $manifest = Join-Path $root 'cmd/agent-configurator/app.manifest'
-    $resource = Join-Path $root 'cmd/agent-configurator/rsrc_windows_amd64.syso'
-    rsrc -manifest $manifest -arch amd64 -o $resource
-    if ($LASTEXITCODE -ne 0) { throw 'rsrc failed for agent configurator manifest' }
+    $resources = @(
+        @{ Manifest = 'cmd/agent-configurator/app.manifest'; Output = 'cmd/agent-configurator/rsrc_windows_amd64.syso'; Name = 'agent configurator' },
+        @{ Manifest = 'cmd/client/app.manifest'; Output = 'cmd/client/rsrc_windows_amd64.syso'; Name = 'home app' }
+    )
+    foreach ($resource in $resources) {
+        $manifest = Join-Path $root $resource.Manifest
+        $output = Join-Path $root $resource.Output
+        rsrc -manifest $manifest -arch amd64 -o $output
+        if ($LASTEXITCODE -ne 0) { throw "rsrc failed for $($resource.Name) manifest" }
+    }
 }
 
 Push-Location $root
 try {
-    Build-AgentConfiguratorResource
+    Build-WindowsResources
 
     go mod download
     if ($LASTEXITCODE -ne 0) { throw 'go mod download failed' }
@@ -82,5 +116,9 @@ finally {
     Remove-Item Env:\GOOS -ErrorAction SilentlyContinue
     Remove-Item Env:\GOARCH -ErrorAction SilentlyContinue
     Remove-Item Env:\CGO_ENABLED -ErrorAction SilentlyContinue
+    Restore-EnvValue -Name 'GOTMPDIR' -Value $savedEnv.GOTMPDIR
+    Restore-EnvValue -Name 'GOCACHE' -Value $savedEnv.GOCACHE
+    Restore-EnvValue -Name 'TEMP' -Value $savedEnv.TEMP
+    Restore-EnvValue -Name 'TMP' -Value $savedEnv.TMP
     Pop-Location
 }
