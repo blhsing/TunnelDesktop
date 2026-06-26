@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -68,7 +69,15 @@ func main() {
 	if bundleFile == "" && configFile == "" {
 		bundleFile = defaultBundlePath("agent.tnl")
 	}
-	if serviceMode {
+	runningAsService := serviceMode
+	if !runningAsService {
+		var err error
+		runningAsService, err = svc.IsWindowsService()
+		if err != nil {
+			log.Printf("could not determine Windows service context: %v", err)
+		}
+	}
+	if runningAsService {
 		if err := runService(bundleFile, configFile); err != nil {
 			log.Fatal(err)
 		}
@@ -234,23 +243,18 @@ func installService(bundleFile, configFile string) error {
 	}
 	defer m.Disconnect()
 
-	args := []string{"-service"}
-	if bundleFile != "" {
-		args = append(args, "-bundle", bundleFile)
-	}
-	if configFile != "" {
-		args = append(args, "-config", configFile)
-	}
-	s, err := m.CreateService(serviceName, exePath, mgr.Config{
-		DisplayName: "TunnelDesktop Agent",
-		StartType:   mgr.StartAutomatic,
-		Description: "Work-side RDP backend for TunnelDesktop.",
-	}, args...)
+	args := serviceArgs(bundleFile, configFile)
+	serviceConfig := serviceInstallConfig(exePath, args)
+	s, err := m.CreateService(serviceName, exePath, serviceConfig, args...)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "exists") {
+		if errors.Is(err, windows.ERROR_SERVICE_EXISTS) || strings.Contains(strings.ToLower(err.Error()), "exists") {
 			s, err = m.OpenService(serviceName)
 			if err != nil {
 				return err
+			}
+			if err := s.UpdateConfig(serviceConfig); err != nil {
+				_ = s.Close()
+				return fmt.Errorf("update existing service: %w", err)
 			}
 		} else if isAccessDenied(err) {
 			return installScheduledTask(bundleFile, configFile)
@@ -265,6 +269,37 @@ func installService(bundleFile, configFile string) error {
 	}
 	fmt.Println("TunnelDesktop Agent service installed and started")
 	return nil
+}
+
+func serviceArgs(bundleFile, configFile string) []string {
+	args := []string{"-service"}
+	if bundleFile != "" {
+		args = append(args, "-bundle", bundleFile)
+	}
+	if configFile != "" {
+		args = append(args, "-config", configFile)
+	}
+	return args
+}
+
+func serviceInstallConfig(exePath string, args []string) mgr.Config {
+	return mgr.Config{
+		ServiceType:    windows.SERVICE_WIN32_OWN_PROCESS,
+		StartType:      mgr.StartAutomatic,
+		ErrorControl:   mgr.ErrorNormal,
+		BinaryPathName: serviceBinaryPath(exePath, args),
+		DisplayName:    "TunnelDesktop Agent",
+		Description:    "Work-side RDP backend for TunnelDesktop.",
+	}
+}
+
+func serviceBinaryPath(exePath string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, syscall.EscapeArg(exePath))
+	for _, arg := range args {
+		parts = append(parts, syscall.EscapeArg(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 func uninstallService() error {

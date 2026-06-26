@@ -6,7 +6,6 @@ Raw RDP is never exposed on the public internet listener. Public traffic uses TL
 
 ## Table Of Contents
 
-- [Status](#status)
 - [How It Works](#how-it-works)
 - [Installation](#installation)
   - [1. Install Android Relay](#1-install-android-relay)
@@ -31,19 +30,8 @@ Raw RDP is never exposed on the public internet listener. Public traffic uses TL
   - [Gradle Cannot Download Dependencies](#gradle-cannot-download-dependencies)
 - [Development](#development)
 - [Repository Layout](#repository-layout)
+- [Status](#status)
 - [Current Limitations](#current-limitations)
-
-## Status
-
-This repo currently contains:
-
-- Android relay app and gomobile `relaycore.aar`.
-- Windows work agent implemented as a Windows service deliverable.
-- Windows home client implemented as a tray helper deliverable.
-- Standalone relay and bundle generator for PC testing and VPS fallback.
-- Build scripts for Go binaries, Android AAR, and debug APK.
-
-Phase 0 network feasibility still must be proven on the real phone/carrier/work-proxy path before relying on the phone-hosted relay.
 
 ## How It Works
 
@@ -447,6 +435,18 @@ tools/gencerts     harness .tnl generator
 android/           Android relay app
 build/             build scripts
 ```
+
+## Status
+
+This repo currently contains:
+
+- Android relay app and gomobile `relaycore.aar`.
+- Windows work agent implemented as a Windows service deliverable.
+- Windows home client implemented as a tray helper deliverable.
+- Standalone relay and bundle generator for PC testing and VPS fallback.
+- Build scripts for Go binaries, Android AAR, and debug APK.
+
+Phase 0 network feasibility still must be proven on the real phone/carrier/work-proxy path before relying on the phone-hosted relay.
 
 ## Current Limitations
 
