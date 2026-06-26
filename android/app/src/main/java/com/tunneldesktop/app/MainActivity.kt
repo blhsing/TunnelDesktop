@@ -38,6 +38,10 @@ import java.net.NetworkInterface
 import java.util.Collections
 
 class MainActivity : AppCompatActivity() {
+    private companion object {
+        const val LEGACY_DEFAULT_RAW_ALLOWLIST = "192.168.43.0/24"
+    }
+
     private lateinit var prefs: SharedPreferences
     private lateinit var relayAddr: EditText
     private lateinit var relayPort: EditText
@@ -50,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bundleState: TextView
     private lateinit var logs: TextView
     private lateinit var relayToggle: Button
+    private var lastAutoRawAllowlist = ""
     private val statusHandler = Handler(Looper.getMainLooper())
     private val statusRefresh = object : Runnable {
         override fun run() {
@@ -115,7 +120,11 @@ class MainActivity : AppCompatActivity() {
         relayPort = edit(AndroidRelayPorts.DEFAULT_PORT.toString(), savedRelayPort())
         relayHosts = edit("Hostname, public IPv6", prefs.getString("relay_hosts", "") ?: "")
         agentProxy = edit("Blank for direct, or http://proxy.example:8080", savedAgentProxy())
-        rawAllow = edit("192.168.43.0/24", prefs.getString("raw_allow", "192.168.43.0/24") ?: "")
+        val initialRawAllowlist = suggestedRawAllowlist(privateIpv4Candidates())
+        if (initialRawAllowlist != null) {
+            lastAutoRawAllowlist = initialRawAllowlist
+        }
+        rawAllow = edit(initialRawAllowlist ?: "Detected hotspot CIDR", savedRawAllowlist(initialRawAllowlist))
         publicIpv6 = TextView(this).apply {
             textSize = 13f
             setTextColor(ink)
@@ -410,6 +419,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshPrivateIp() {
         val candidates = privateIpv4Candidates()
+        updateRawAllowDefault(candidates)
         privateIp.text = if (candidates.isEmpty()) {
             "Private IP: none detected"
         } else {
@@ -494,12 +504,19 @@ class MainActivity : AppCompatActivity() {
             Collections.list(NetworkInterface.getNetworkInterfaces())
                 .filter { it.isUp && !it.isLoopback }
                 .flatMap { iface ->
-                    Collections.list(iface.inetAddresses)
-                        .filterIsInstance<Inet4Address>()
-                        .mapNotNull { address ->
+                    iface.interfaceAddresses.mapNotNull { interfaceAddress ->
+                        val address = interfaceAddress.address
+                        if (address is Inet4Address) {
                             val host = address.hostAddress ?: return@mapNotNull null
-                            if (isPrivateIpv4(address)) PrivateIp(iface.name, host) else null
+                            if (isPrivateIpv4(address)) {
+                                PrivateIp(iface.name, host, interfaceAddress.networkPrefixLength.toInt())
+                            } else {
+                                null
+                            }
+                        } else {
+                            null
                         }
+                    }
                 }
                 .distinctBy { it.address }
                 .sortedWith(compareBy<PrivateIp> { privateIpRank(it.interfaceName, it.address) }.thenBy { it.interfaceName }.thenBy { it.address })
@@ -552,6 +569,40 @@ class MainActivity : AppCompatActivity() {
             .filter { it.isNotEmpty() }
     }
 
+    private fun updateRawAllowDefault(candidates: List<PrivateIp>) {
+        val suggested = suggestedRawAllowlist(candidates) ?: return
+        rawAllow.hint = suggested
+        val current = rawAllow.text.toString().trim()
+        val shouldReplace = current.isBlank() ||
+            current == LEGACY_DEFAULT_RAW_ALLOWLIST ||
+            current == lastAutoRawAllowlist
+        lastAutoRawAllowlist = suggested
+        if (shouldReplace && current != suggested) {
+            rawAllow.setText(suggested)
+        }
+    }
+
+    private fun suggestedRawAllowlist(candidates: List<PrivateIp>): String? {
+        val candidate = candidates.firstOrNull() ?: return null
+        val prefixLength = if (candidate.prefixLength in 8..30) candidate.prefixLength else 24
+        return networkCidr(candidate.address, prefixLength)
+    }
+
+    private fun networkCidr(address: String, prefixLength: Int): String? {
+        val octets = address.split(".").map { it.toIntOrNull() ?: return null }
+        if (octets.size != 4 || octets.any { it !in 0..255 }) return null
+        val ip = octets.fold(0) { acc, octet -> acc shl 8 or octet }
+        val mask = if (prefixLength == 0) 0 else -1 shl (32 - prefixLength)
+        val network = ip and mask
+        val networkOctets = listOf(
+            network ushr 24 and 0xff,
+            network ushr 16 and 0xff,
+            network ushr 8 and 0xff,
+            network and 0xff
+        )
+        return networkOctets.joinToString(".") + "/$prefixLength"
+    }
+
     private fun jsonArray(values: List<String>): JSONArray {
         return JSONArray().apply {
             values.forEach { put(it) }
@@ -585,8 +636,16 @@ class MainActivity : AppCompatActivity() {
         return prefs.getString("relay_port", AndroidRelayPorts.DEFAULT_PORT.toString()) ?: AndroidRelayPorts.DEFAULT_PORT.toString()
     }
 
+    private fun savedRawAllowlist(defaultRawAllowlist: String?): String {
+        val value = prefs.getString("raw_allow", null)?.trim().orEmpty()
+        if (value.isBlank() || value == LEGACY_DEFAULT_RAW_ALLOWLIST) {
+            return defaultRawAllowlist.orEmpty()
+        }
+        return value
+    }
+
     private data class PublicIpv6(val interfaceName: String, val address: String)
-    private data class PrivateIp(val interfaceName: String, val address: String)
+    private data class PrivateIp(val interfaceName: String, val address: String, val prefixLength: Int)
     private data class StatusModel(val text: String, val textColor: Int, val backgroundColor: Int)
 
     private fun recentLogText(): String {

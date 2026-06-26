@@ -68,7 +68,7 @@ Open the app:
 3. If the phone has no stable hostname, tap `Detect IPv6`, confirm the shown public IPv6, then tap `Use IPv6`. This fills the relay host and shows the bracketed address the agent can use.
 4. Enter certificate names. Include the stable hostname, or the raw IPv6 literal when using the detected public IPv6 path.
 5. Optionally enter the work agent HTTP proxy, for example `http://proxy.example:8080`. This value is written into `agent.tnl` for the work PC only; the Android relay does not use the work proxy. Leave it blank for direct connections.
-6. Enter the hotspot raw-RDP allowlist if using the hotspot path.
+6. If using the hotspot path, confirm the hotspot raw-RDP allowlist. The app pre-fills this from the detected private IPv4 subnet, for example `192.168.203.0/24` when the phone address is `192.168.203.45`.
 7. Tap `Generate bundles`.
 8. Tap `Export agent` and share `agent.tnl` to the work PC.
 9. Tap `Export client` and share `client.tnl` to the home PC.
@@ -134,6 +134,7 @@ It:
 - Supports boot restart, locked-boot restart, watchdog alarm restart, partial WakeLock, WifiLock, and optional no-route `VpnService` persistence mode.
 - Shows detected public IPv6 candidates and the bracketed relay address the work agent can use when there is no stable hostname.
 - Shows detected private IPv4 candidates and the `IP:3389` address that a home PC can use on the hotspot/private LAN path.
+- Pre-fills the hotspot raw-RDP allowlist from the selected private IPv4 network.
 - Provides basic setup, status, log, and export UI.
 
 ### Work Agent
