@@ -73,6 +73,7 @@ Open the app:
 8. Tap `Export agent` and share `agent.tnl` to the work PC.
 9. Tap `Export client` and share `client.tnl` to the home PC.
 10. Tap `Start relay`.
+11. For the hotspot/private-LAN path, use the app's `Hotspot/LAN RDP address` value from the home PC.
 
 ### 2. Keep Android Alive
 
@@ -132,6 +133,7 @@ It:
 - Hosts a `FOREGROUND_SERVICE_SPECIAL_USE` foreground service.
 - Supports boot restart, locked-boot restart, watchdog alarm restart, partial WakeLock, WifiLock, and optional no-route `VpnService` persistence mode.
 - Shows detected public IPv6 candidates and the bracketed relay address the work agent can use when there is no stable hostname.
+- Shows detected private IPv4 candidates and the `IP:3389` address that a home PC can use on the hotspot/private LAN path.
 - Provides basic setup, status, log, and export UI.
 
 ### Work Agent
@@ -196,7 +198,7 @@ Debug mode:
 .\client.exe -console -bundle .\client.tnl
 ```
 
-Hotspot users can skip `client.exe` and point stock `mstsc` at `PHONE_HOTSPOT_IP:3389` if the Android raw-RDP listener is enabled and allowlisted.
+Hotspot users can skip `client.exe` and point stock `mstsc` at the Android app's displayed `Hotspot/LAN RDP address` if the Android raw-RDP listener is enabled and allowlisted.
 
 ### Dev Harness And VPS Fallback
 

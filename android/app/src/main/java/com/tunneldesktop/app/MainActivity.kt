@@ -31,6 +31,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.Inet4Address
 import relaycore.Relaycore
 import java.net.Inet6Address
 import java.net.NetworkInterface
@@ -44,6 +45,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var agentProxy: EditText
     private lateinit var rawAllow: EditText
     private lateinit var publicIpv6: TextView
+    private lateinit var privateIp: TextView
     private lateinit var status: TextView
     private lateinit var bundleState: TextView
     private lateinit var logs: TextView
@@ -121,6 +123,13 @@ class MainActivity : AppCompatActivity() {
             background = rounded(accentSoft, Color.TRANSPARENT)
             setTextIsSelectable(true)
         }
+        privateIp = TextView(this).apply {
+            textSize = 13f
+            setTextColor(ink)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(Color.rgb(239, 246, 255), Color.TRANSPARENT)
+            setTextIsSelectable(true)
+        }
         status = TextView(this).apply {
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
@@ -166,12 +175,16 @@ class MainActivity : AppCompatActivity() {
                 field("Relay host or IPv6", relayAddr),
                 field("Relay port", relayPort),
                 publicIpv6,
+                privateIp,
                 actionRow(
                     button("Detect IPv6") { refreshPublicIpv6() },
                     button("Use IPv6") { applyPublicIpv6() }
                 ),
                 actionRow(
                     button("Copy IPv6") { copyPublicIpv6() },
+                    button("Copy LAN RDP") { copyPrivateRdp() }
+                ),
+                actionRow(
                     button("Refresh") { refreshStatus() }
                 )
             )
@@ -316,6 +329,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshStatus(extra: String = "") {
         refreshPublicIpv6()
+        refreshPrivateIp()
         val config = prefs.getString("config", "") ?: ""
         val hasConfig = config.isNotBlank()
         val hasAgent = !prefs.getString("agent_bundle", "").isNullOrBlank()
@@ -394,6 +408,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun refreshPrivateIp() {
+        val candidates = privateIpv4Candidates()
+        privateIp.text = if (candidates.isEmpty()) {
+            "Private IP: none detected"
+        } else {
+            val primary = candidates.first()
+            val lines = mutableListOf(
+                "Private IP: ${primary.address} (${primary.interfaceName})",
+                "Hotspot/LAN RDP address: ${primary.address}:3389"
+            )
+            if (candidates.size > 1) {
+                lines.add("Other private IP: " + candidates.drop(1).joinToString(", ") { "${it.address} (${it.interfaceName})" })
+            }
+            lines.joinToString("\n")
+        }
+    }
+
     private fun applyPublicIpv6() {
         val candidate = publicIpv6Candidates().firstOrNull()
         if (candidate == null) {
@@ -428,6 +459,18 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Copied $relay", Toast.LENGTH_SHORT).show()
     }
 
+    private fun copyPrivateRdp() {
+        val candidate = privateIpv4Candidates().firstOrNull()
+        if (candidate == null) {
+            refreshStatus("No private IP detected")
+            return
+        }
+        val rdp = "${candidate.address}:3389"
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("TunnelDesktop LAN RDP address", rdp))
+        Toast.makeText(this, "Copied $rdp", Toast.LENGTH_SHORT).show()
+    }
+
     private fun publicIpv6Candidates(): List<PublicIpv6> {
         return try {
             Collections.list(NetworkInterface.getNetworkInterfaces())
@@ -446,12 +489,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun privateIpv4Candidates(): List<PrivateIp> {
+        return try {
+            Collections.list(NetworkInterface.getNetworkInterfaces())
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { iface ->
+                    Collections.list(iface.inetAddresses)
+                        .filterIsInstance<Inet4Address>()
+                        .mapNotNull { address ->
+                            val host = address.hostAddress ?: return@mapNotNull null
+                            if (isPrivateIpv4(address)) PrivateIp(iface.name, host) else null
+                        }
+                }
+                .distinctBy { it.address }
+                .sortedWith(compareBy<PrivateIp> { privateIpRank(it.interfaceName, it.address) }.thenBy { it.interfaceName }.thenBy { it.address })
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     private fun isPublicIpv6(address: Inet6Address): Boolean {
         if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress) return false
         if (address.isSiteLocalAddress || address.isMulticastAddress) return false
         val first = address.address[0].toInt() and 0xff
         if ((first and 0xfe) == 0xfc) return false
         return true
+    }
+
+    private fun isPrivateIpv4(address: Inet4Address): Boolean {
+        if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isMulticastAddress) return false
+        val bytes = address.address.map { it.toInt() and 0xff }
+        return bytes[0] == 10 ||
+            bytes[0] == 172 && bytes[1] in 16..31 ||
+            bytes[0] == 192 && bytes[1] == 168
+    }
+
+    private fun privateIpRank(interfaceName: String, address: String): Int {
+        val name = interfaceName.lowercase()
+        return when {
+            name.startsWith("ap") || name.contains("hotspot") || address.startsWith("192.168.43.") -> 0
+            name.startsWith("wlan") || name.startsWith("swlan") || name.startsWith("wifi") -> 1
+            name.startsWith("eth") || name.startsWith("rndis") -> 2
+            else -> 3
+        }
     }
 
     private fun relayPortForDisplay(): String {
@@ -506,6 +586,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private data class PublicIpv6(val interfaceName: String, val address: String)
+    private data class PrivateIp(val interfaceName: String, val address: String)
     private data class StatusModel(val text: String, val textColor: Int, val backgroundColor: Int)
 
     private fun recentLogText(): String {
