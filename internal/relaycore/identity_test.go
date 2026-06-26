@@ -37,3 +37,26 @@ func TestGenerateIdentityProducesUsableBundles(t *testing.T) {
 		t.Fatalf("unexpected client bundle: %#v", client)
 	}
 }
+
+func TestGenerateIdentityDefaultsBlankProxyToDirect(t *testing.T) {
+	result, err := GenerateIdentity(SetupOptions{
+		RelayAddr:    "[2001:db8::42]:443",
+		ClientListen: "127.0.0.1:3390",
+	})
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
+	agent, err := DecodeBundle(result.AgentBundle)
+	if err != nil {
+		t.Fatalf("DecodeBundle(agent): %v", err)
+	}
+	if agent.Proxy != "direct" {
+		t.Fatalf("agent proxy = %q, want direct", agent.Proxy)
+	}
+	if agent.RelayAddr != "[2001:db8::42]:443" {
+		t.Fatalf("agent relay addr = %q", agent.RelayAddr)
+	}
+	if agent.ServerName != "2001:db8::42" {
+		t.Fatalf("agent server name = %q", agent.ServerName)
+	}
+}

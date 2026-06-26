@@ -59,7 +59,7 @@ class MainActivity : AppCompatActivity() {
         }
         relayAddr = edit("Relay hostname:port", prefs.getString("relay_addr", "phone.example.com:443") ?: "")
         relayHosts = edit("Certificate names", prefs.getString("relay_hosts", "phone.example.com") ?: "")
-        agentProxy = edit("Work proxy", prefs.getString("agent_proxy", "http://PROXY:PORT") ?: "")
+        agentProxy = edit("Work agent HTTP proxy (optional)", savedAgentProxy())
         rawAllow = edit("Hotspot allowlist", prefs.getString("raw_allow", "192.168.43.0/24") ?: "")
         publicIpv6 = TextView(this).apply {
             textSize = 14f
@@ -124,26 +124,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun generateIdentity() {
-        val options = JSONObject()
-            .put("relay_addr", relayAddr.text.toString())
-            .put("relay_hosts", relayHosts.text.toString().split(",").map { it.trim() }.filter { it.isNotEmpty() })
-            .put("agent_proxy", agentProxy.text.toString())
-            .put("raw_rdp_addr", "0.0.0.0:3389")
-            .put("raw_allowlist", rawAllow.text.toString().split(",").map { it.trim() }.filter { it.isNotEmpty() })
-            .put("rdp_addr", "127.0.0.1:3389")
-            .put("client_listen", "127.0.0.1:3389")
-        val result = JSONObject(Relaycore.generateSetup(options.toString()))
-        prefs.edit()
-            .putString("relay_addr", relayAddr.text.toString())
-            .putString("relay_hosts", relayHosts.text.toString())
-            .putString("agent_proxy", agentProxy.text.toString())
-            .putString("raw_allow", rawAllow.text.toString())
-            .putString("config", result.getString("relay_config_json"))
-            .putString("agent_bundle", result.getString("agent_bundle"))
-            .putString("client_bundle", result.getString("client_bundle"))
-            .putBoolean("autostart", true)
-            .apply()
-        refreshStatus()
+        try {
+            val options = JSONObject()
+                .put("relay_addr", relayAddr.text.toString().trim())
+                .put("relay_hosts", certificateNames())
+                .put("agent_proxy", agentProxyValue())
+                .put("raw_rdp_addr", "0.0.0.0:3389")
+                .put("raw_allowlist", rawAllow.text.toString().split(",").map { it.trim() }.filter { it.isNotEmpty() })
+                .put("rdp_addr", "127.0.0.1:3389")
+                .put("client_listen", "127.0.0.1:3389")
+            val result = JSONObject(Relaycore.generateSetup(options.toString()))
+            prefs.edit()
+                .putString("relay_addr", relayAddr.text.toString().trim())
+                .putString("relay_hosts", relayHosts.text.toString())
+                .putString("agent_proxy", agentProxy.text.toString().trim())
+                .putString("raw_allow", rawAllow.text.toString())
+                .putString("config", result.getString("relay_config_json"))
+                .putString("agent_bundle", result.getString("agent_bundle"))
+                .putString("client_bundle", result.getString("client_bundle"))
+                .putBoolean("autostart", true)
+                .apply()
+            refreshStatus("Generated bundles")
+        } catch (e: Exception) {
+            val message = e.message ?: e.javaClass.simpleName
+            refreshStatus("Generate failed: $message")
+            Toast.makeText(this, "Generate failed: $message", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun shareBundle(name: String, bundle: String) {
@@ -258,6 +264,31 @@ class MainActivity : AppCompatActivity() {
             return "443"
         }
         return if (value.count { it == ':' } == 1) value.substringAfterLast(":") else "443"
+    }
+
+    private fun certificateNames(): List<String> {
+        return relayHosts.text.toString()
+            .split(",")
+            .map { normalizeCertificateName(it.trim()) }
+            .filter { it.isNotEmpty() }
+    }
+
+    private fun normalizeCertificateName(value: String): String {
+        if (value.startsWith("[")) {
+            val end = value.indexOf("]")
+            if (end > 0) return value.substring(1, end)
+        }
+        return if (value.count { it == ':' } == 1) value.substringBefore(":") else value
+    }
+
+    private fun agentProxyValue(): String {
+        val value = agentProxy.text.toString().trim()
+        return if (value.isBlank()) "direct" else value
+    }
+
+    private fun savedAgentProxy(): String {
+        val value = prefs.getString("agent_proxy", "") ?: ""
+        return if (value == "http://PROXY:PORT") "" else value
     }
 
     private data class PublicIpv6(val interfaceName: String, val address: String)

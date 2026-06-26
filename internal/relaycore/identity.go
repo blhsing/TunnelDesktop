@@ -239,7 +239,7 @@ func (o *SetupOptions) applyDefaults() {
 		o.RelayHosts = append(o.RelayHosts, host)
 	}
 	if o.AgentProxy == "" {
-		o.AgentProxy = "http://PROXY:PORT"
+		o.AgentProxy = "direct"
 	}
 	if o.RDPAddr == "" {
 		o.RDPAddr = "127.0.0.1:3389"

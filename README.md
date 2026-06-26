@@ -66,7 +66,7 @@ Open the app:
 1. Enter the stable relay hostname and port, for example `phone.example.com:443`.
 2. If the phone has no stable hostname, tap `Detect IPv6`, confirm the shown public IPv6, then tap `Use IPv6`. This fills the relay address as `[public-ipv6]:443` and adds the raw IPv6 literal to the certificate names.
 3. Enter certificate names. Include the stable hostname, or the raw IPv6 literal when using the detected public IPv6 path.
-4. Enter the work proxy, for example `http://proxy.example:8080`.
+4. Optionally enter the work agent HTTP proxy, for example `http://proxy.example:8080`. This value is written into `agent.tnl` for the work PC only; the Android relay does not use the work proxy. Leave it blank for direct connections.
 5. Enter the hotspot raw-RDP allowlist if using the hotspot path.
 6. Tap `Generate`.
 7. Tap `Agent` and share `agent.tnl` to the work PC.
@@ -153,7 +153,7 @@ Debug/operations commands:
 .\agent.exe -uninstall
 ```
 
-Use an explicit proxy address in `agent.tnl`. A LocalSystem Windows service does not inherit the interactive user's WinINET/PAC settings.
+Use an explicit proxy address in `agent.tnl` when the work PC must egress through a proxy. A LocalSystem Windows service does not inherit the interactive user's WinINET/PAC settings. Leave the proxy blank during Android setup when the work agent should connect directly.
 
 ### Agent Installer And Configurator
 
