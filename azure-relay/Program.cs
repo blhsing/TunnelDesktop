@@ -58,7 +58,7 @@ async Task RelayWebSocketHandler(HttpContext context, RelayHub hub)
             await hub.ServeClientAsync(token, socket, remote, context.RequestAborted);
             break;
         case "home-agent":
-            await hub.ServeHomeAgentAsync(token, socket, remote, context.RequestAborted);
+            await hub.ServeHomeAgentAsync(token, socket, remote, ReadHomeAgentInfo(context.Request), context.RequestAborted);
             break;
         case "probe":
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "probe ok", CancellationToken.None);
@@ -109,6 +109,38 @@ static string RemoteAddress(HttpContext context)
         return forwarded.Split(',')[0].Trim();
     }
     return context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+}
+
+static HomeAgentInfo ReadHomeAgentInfo(HttpRequest request)
+{
+    var hotspotIp = ReadHeaderValue(request, "X-TunnelDesktop-Hotspot-IP", 64);
+    var privateIps = ReadHeaderList(request, "X-TunnelDesktop-Private-IPs", 12, 96);
+    return new HomeAgentInfo(hotspotIp, privateIps);
+}
+
+static string? ReadHeaderValue(HttpRequest request, string name, int maxLength)
+{
+    var value = request.Headers[name].FirstOrDefault()?.Trim();
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+    value = value.Replace("\r", "").Replace("\n", "");
+    return value.Length > maxLength ? value[..maxLength] : value;
+}
+
+static string[] ReadHeaderList(HttpRequest request, string name, int maxItems, int maxItemLength)
+{
+    var value = ReadHeaderValue(request, name, maxItems * maxItemLength);
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return [];
+    }
+    return value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(item => item.Length > maxItemLength ? item[..maxItemLength] : item)
+        .Where(item => item.Length > 0)
+        .Take(maxItems)
+        .ToArray();
 }
 
 static string DashboardHtml(string room = "")
@@ -251,7 +283,7 @@ static string DashboardHtml(string room = "")
     .pill.bad { border-color: #efc5c5; background: #fff0f0; }
     @media (max-width: 760px) {
       .grid { grid-template-columns: 1fr; }
-      th:nth-child(5), td:nth-child(5) { display: none; }
+      th:nth-child(6), td:nth-child(6) { display: none; }
     }
   </style>
 </head>
@@ -288,6 +320,7 @@ static string DashboardHtml(string room = "")
           <th>Room</th>
           <th>Work Agent</th>
           <th>Home Agent</th>
+          <th>Hotspot IP</th>
           <th>Active Pairs</th>
           <th>Last Client</th>
         </tr>
@@ -311,6 +344,16 @@ static string DashboardHtml(string room = "")
 
     function pill(ok, text) {
       return `<span class="pill ${ok ? "ok" : "bad"}">${text}</span>`;
+    }
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char]));
     }
 
     function fmt(value) {
@@ -342,22 +385,27 @@ static string DashboardHtml(string room = "")
         setValue(workStatus, waitingAgents + activePairs > 0 ? "Connected" : "Waiting", waitingAgents + activePairs > 0 ? "ok" : "warn");
         workDetail.textContent = `${waitingAgents} idle work sockets, ${activePairs} paired streams.`;
         setValue(homeStatus, homeAgents > 0 ? "Connected" : "Waiting", homeAgents > 0 ? "ok" : "warn");
-        homeDetail.textContent = `${homeAgents} Android home-agent status connection${homeAgents === 1 ? "" : "s"}.`;
+        const hotspotIps = rooms.map(r => r.home_agent_hotspot_ip).filter(Boolean);
+        homeDetail.textContent = `${homeAgents} Android home-agent status connection${homeAgents === 1 ? "" : "s"}.` +
+          (hotspotIps.length ? ` Hotspot: ${hotspotIps.join(", ")}.` : "");
         streamStatus.textContent = activePairs.toString();
         streamDetail.textContent = activePairs === 0 ? "No active RDP streams." : `${activePairs} RDP stream${activePairs === 1 ? "" : "s"} bridged.`;
 
         if (rooms.length === 0) {
-          roomsBody.innerHTML = '<tr><td colspan="5" class="subtle">No token rooms have connected yet.</td></tr>';
+          roomsBody.innerHTML = '<tr><td colspan="6" class="subtle">No token rooms have connected yet.</td></tr>';
           return;
         }
         roomsBody.innerHTML = rooms.map(r => {
           const workConnected = (r.waiting_agents || 0) + (r.active_pairs || 0) > 0;
+          const hotspotIp = r.home_agent_hotspot_ip || "";
+          const privateIps = r.home_agent_private_ips || [];
           return `<tr>
-            <td><code>${r.id}</code></td>
-            <td>${pill(workConnected, workConnected ? "connected" : "waiting")}<br><span class="subtle">${r.waiting_agents || 0} idle<br>${fmt(r.last_agent_connected_at)}</span></td>
-            <td>${pill(!!r.home_agent_connected, r.home_agent_connected ? "connected" : "waiting")}<br><span class="subtle">${r.home_agent_remote || ""}<br>${fmt(r.home_agent_connected_at)}</span></td>
+            <td><code>${esc(r.id)}</code></td>
+            <td>${pill(workConnected, workConnected ? "connected" : "waiting")}<br><span class="subtle">${r.waiting_agents || 0} idle<br>${esc(fmt(r.last_agent_connected_at))}</span></td>
+            <td>${pill(!!r.home_agent_connected, r.home_agent_connected ? "connected" : "waiting")}<br><span class="subtle">${esc(r.home_agent_remote || "")}<br>${esc(fmt(r.home_agent_connected_at))}</span></td>
+            <td>${hotspotIp ? `<code>${esc(hotspotIp)}</code>` : '<span class="subtle">not reported</span>'}<br><span class="subtle">${privateIps.map(esc).join("<br>")}</span></td>
             <td>${r.active_pairs || 0}<br><span class="subtle">${r.total_pairs || 0} total</span></td>
-            <td><span class="subtle">${r.last_client_remote || ""}<br>${fmt(r.last_client_connected_at)}</span></td>
+            <td><span class="subtle">${esc(r.last_client_remote || "")}<br>${esc(fmt(r.last_client_connected_at))}</span></td>
           </tr>`;
         }).join("");
       } catch (error) {
@@ -471,11 +519,11 @@ sealed class RelayHub
         }
     }
 
-    public async Task ServeHomeAgentAsync(string token, WebSocket socket, string remote, CancellationToken abort)
+    public async Task ServeHomeAgentAsync(string token, WebSocket socket, string remote, HomeAgentInfo info, CancellationToken abort)
     {
         var room = RoomFor(token);
-        room.HomeAgentConnected(remote);
-        _log.LogInformation("home agent connected room={Room} remote={Remote}", room.Id, remote);
+        room.HomeAgentConnected(remote, info);
+        _log.LogInformation("home agent connected room={Room} remote={Remote} hotspot={HotspotIp}", room.Id, remote, info.HotspotIp);
         NotifyDashboards();
         try
         {
@@ -657,6 +705,8 @@ sealed class RelayRoom
     private DateTimeOffset? _lastAgentConnectedAt;
     private DateTimeOffset? _lastAgentDisconnectedAt;
     private string? _homeAgentRemote;
+    private string? _homeAgentHotspotIp;
+    private string[] _homeAgentPrivateIps = [];
     private DateTimeOffset? _homeAgentConnectedAt;
     private DateTimeOffset? _homeAgentDisconnectedAt;
     private string? _lastClientRemote;
@@ -709,11 +759,13 @@ sealed class RelayRoom
         }
     }
 
-    public void HomeAgentConnected(string remote)
+    public void HomeAgentConnected(string remote, HomeAgentInfo info)
     {
         lock (_gate)
         {
             _homeAgentRemote = remote;
+            _homeAgentHotspotIp = info.HotspotIp;
+            _homeAgentPrivateIps = info.PrivateIps;
             _homeAgentConnectedAt = DateTimeOffset.UtcNow;
         }
     }
@@ -726,6 +778,8 @@ sealed class RelayRoom
             {
                 _homeAgentDisconnectedAt = DateTimeOffset.UtcNow;
                 _homeAgentRemote = null;
+                _homeAgentHotspotIp = null;
+                _homeAgentPrivateIps = [];
                 _homeAgentConnectedAt = null;
             }
         }
@@ -786,6 +840,8 @@ sealed class RelayRoom
                 last_agent_disconnected_at = _lastAgentDisconnectedAt,
                 home_agent_connected = _homeAgentRemote is not null,
                 home_agent_remote = _homeAgentRemote,
+                home_agent_hotspot_ip = _homeAgentHotspotIp,
+                home_agent_private_ips = _homeAgentPrivateIps,
                 home_agent_connected_at = _homeAgentConnectedAt,
                 home_agent_disconnected_at = _homeAgentDisconnectedAt,
                 last_client_remote = _lastClientRemote,
@@ -879,6 +935,8 @@ sealed class WaitingAgent
 }
 
 sealed record HomePeer(WebSocket Socket, string Remote, TaskCompletionSource Done);
+
+sealed record HomeAgentInfo(string? HotspotIp, string[] PrivateIps);
 
 sealed record DashboardClient(Guid Id, WebSocket Socket, string? RoomId)
 {

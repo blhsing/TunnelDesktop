@@ -166,6 +166,8 @@ Roles:
 - `probe`: self-test connection.
 - `dashboard`: browser status stream.
 
+The dashboard shows work-agent presence, Android home-agent presence, active stream counts, and the hotspot/private IPv4 address reported by the Android app.
+
 ### Work Agent
 
 `agent.exe` is the work-side Windows component. It is Windows-service-first because RDP must work while the user is logged out.
@@ -208,6 +210,7 @@ The Android app:
 
 - Stores a shared relay room URL.
 - Keeps an outbound `home-agent` WebSocket for relay presence/status.
+- Reports the detected hotspot/private IPv4 address to the relay dashboard.
 - Copies the matching work-agent and home-client commands.
 - Shows and copies the phone's detected hotspot/private IPv4 address.
 - Uses a foreground service, boot receiver, watchdog receiver, and optional persistence controls.

@@ -74,6 +74,8 @@ class RelayService : Service() {
             val request = Request.Builder()
                 .url(webSocketUrl(relayUrl))
                 .header("X-TunnelDesktop-Role", "home-agent")
+                .header("X-TunnelDesktop-Hotspot-IP", PhoneNetwork.hotspotIp().orEmpty())
+                .header("X-TunnelDesktop-Private-IPs", PhoneNetwork.privateIpSummary())
                 .build()
             webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
