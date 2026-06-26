@@ -29,6 +29,7 @@ class RelayService : Service() {
             if (config.isBlank()) {
                 throw IllegalStateException("Generate bundles before starting the relay")
             }
+            AndroidRelayPorts.requireConfigListenPort(config)
             acquireLocks()
             Relaycore.configure(config)
             Relaycore.start()

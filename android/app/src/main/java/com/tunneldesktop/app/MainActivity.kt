@@ -39,6 +39,7 @@ import java.util.Collections
 class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var relayAddr: EditText
+    private lateinit var relayPort: EditText
     private lateinit var relayHosts: EditText
     private lateinit var agentProxy: EditText
     private lateinit var rawAllow: EditText
@@ -108,8 +109,9 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        relayAddr = edit("phone.example.com:443 or [ipv6]:443", prefs.getString("relay_addr", "phone.example.com:443") ?: "")
-        relayHosts = edit("phone.example.com, 2001:db8::42", prefs.getString("relay_hosts", "phone.example.com") ?: "")
+        relayAddr = edit("Hostname or public IPv6", savedRelayHost())
+        relayPort = edit(AndroidRelayPorts.DEFAULT_PORT.toString(), savedRelayPort())
+        relayHosts = edit("Hostname, public IPv6", prefs.getString("relay_hosts", "") ?: "")
         agentProxy = edit("Blank for direct, or http://proxy.example:8080", savedAgentProxy())
         rawAllow = edit("192.168.43.0/24", prefs.getString("raw_allow", "192.168.43.0/24") ?: "")
         publicIpv6 = TextView(this).apply {
@@ -161,7 +163,8 @@ class MainActivity : AppCompatActivity() {
             content,
             section(
                 "Relay Endpoint",
-                field("Relay address", relayAddr),
+                field("Relay host or IPv6", relayAddr),
+                field("Relay port", relayPort),
                 publicIpv6,
                 actionRow(
                     button("Detect IPv6") { refreshPublicIpv6() },
@@ -210,8 +213,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun generateIdentity() {
         try {
+            val relayHost = AndroidRelayPorts.normalizeHost(relayAddr.text.toString())
+            val relayPortValue = AndroidRelayPorts.requirePort(relayPort.text.toString())
+            val relayAddress = AndroidRelayPorts.endpoint(relayHost, relayPortValue.toString())
             val options = JSONObject()
-                .put("relay_addr", relayAddr.text.toString().trim())
+                .put("relay_addr", relayAddress)
                 .put("relay_hosts", jsonArray(certificateNames()))
                 .put("agent_proxy", agentProxyValue())
                 .put("raw_rdp_addr", "0.0.0.0:3389")
@@ -220,7 +226,8 @@ class MainActivity : AppCompatActivity() {
                 .put("client_listen", "127.0.0.1:3389")
             val result = JSONObject(Relaycore.generateSetup(options.toString()))
             prefs.edit()
-                .putString("relay_addr", relayAddr.text.toString().trim())
+                .putString("relay_addr", relayHost)
+                .putString("relay_port", relayPortValue.toString())
                 .putString("relay_hosts", relayHosts.text.toString())
                 .putString("agent_proxy", agentProxy.text.toString().trim())
                 .putString("raw_allow", rawAllow.text.toString())
@@ -263,6 +270,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun startRelay() {
         try {
+            val config = prefs.getString("config", "") ?: ""
+            if (config.isBlank()) {
+                throw IllegalStateException("Generate bundles before starting the relay")
+            }
+            AndroidRelayPorts.requireConfigListenPort(config)
             prefs.edit()
                 .remove("last_error")
                 .putBoolean("running", true)
@@ -340,7 +352,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshPublicIpv6() {
         val candidates = publicIpv6Candidates()
-        val port = relayPort()
+        val port = relayPortForDisplay()
         publicIpv6.text = if (candidates.isEmpty()) {
             "Public IPv6: none detected"
         } else {
@@ -362,8 +374,9 @@ class MainActivity : AppCompatActivity() {
             refreshStatus("No public IPv6 detected")
             return
         }
-        val port = relayPort()
-        relayAddr.setText("[${candidate.address}]:$port")
+        val port = relayPortForDisplay()
+        relayAddr.setText(candidate.address)
+        relayPort.setText(port)
         val hosts = relayHosts.text.toString()
             .split(",")
             .map { it.trim() }
@@ -371,6 +384,7 @@ class MainActivity : AppCompatActivity() {
         relayHosts.setText((listOf(candidate.address) + hosts).joinToString(","))
         prefs.edit()
             .putString("relay_addr", relayAddr.text.toString())
+            .putString("relay_port", port)
             .putString("relay_hosts", relayHosts.text.toString())
             .apply()
         refreshStatus("IPv6 applied; regenerate bundles")
@@ -382,7 +396,7 @@ class MainActivity : AppCompatActivity() {
             refreshStatus("No public IPv6 detected")
             return
         }
-        val relay = "[${candidate.address}]:${relayPort()}"
+        val relay = "[${candidate.address}]:${relayPortForDisplay()}"
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("TunnelDesktop relay address", relay))
         Toast.makeText(this, "Copied $relay", Toast.LENGTH_SHORT).show()
@@ -414,16 +428,8 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    private fun relayPort(): String {
-        val value = relayAddr.text.toString().trim()
-        if (value.startsWith("[")) {
-            val end = value.indexOf("]")
-            if (end >= 0 && value.length > end + 2 && value[end + 1] == ':') {
-                return value.substring(end + 2)
-            }
-            return "443"
-        }
-        return if (value.count { it == ':' } == 1) value.substringAfterLast(":") else "443"
+    private fun relayPortForDisplay(): String {
+        return AndroidRelayPorts.displayPort(relayPort.text.toString()).toString()
     }
 
     private fun certificateNames(): List<String> {
@@ -462,6 +468,15 @@ class MainActivity : AppCompatActivity() {
     private fun savedAgentProxy(): String {
         val value = prefs.getString("agent_proxy", "") ?: ""
         return if (value == "http://PROXY:PORT") "" else value
+    }
+
+    private fun savedRelayHost(): String {
+        val value = prefs.getString("relay_addr", "") ?: ""
+        return AndroidRelayPorts.normalizeHost(value)
+    }
+
+    private fun savedRelayPort(): String {
+        return prefs.getString("relay_port", AndroidRelayPorts.DEFAULT_PORT.toString()) ?: AndroidRelayPorts.DEFAULT_PORT.toString()
     }
 
     private data class PublicIpv6(val interfaceName: String, val address: String)

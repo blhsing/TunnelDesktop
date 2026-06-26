@@ -107,7 +107,7 @@ For Android or relaycore gomobile changes, run:
 Do not present the phone relay path as proven unless the user has verified both:
 
 - cellular IPv6 inbound TCP to the phone works
-- the corporate proxy can CONNECT to the phone hostname or IPv6 on port 443
+- the corporate proxy can CONNECT to the phone hostname or IPv6 on the selected relay port, default `8443`
 
 If either fails, the supported fallback is a public VPS running `cmd/relay`, with regenerated `.tnl` bundles pointing at that VPS.
 

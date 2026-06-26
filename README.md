@@ -43,7 +43,7 @@ Home PC
         |
         v
 Android phone relay
-  TLS :443 public listener
+  TLS :8443 public listener
   optional hotspot-only raw RDP listener
         |
         v
@@ -63,15 +63,16 @@ Install `app-debug.apk` on the phone. For real use, produce and install a signed
 
 Open the app:
 
-1. Enter the stable relay hostname and port, for example `phone.example.com:443`.
-2. If the phone has no stable hostname, tap `Detect IPv6`, confirm the shown public IPv6, then tap `Use IPv6`. This fills the relay address as `[public-ipv6]:443` and adds the raw IPv6 literal to the certificate names.
-3. Enter certificate names. Include the stable hostname, or the raw IPv6 literal when using the detected public IPv6 path.
-4. Optionally enter the work agent HTTP proxy, for example `http://proxy.example:8080`. This value is written into `agent.tnl` for the work PC only; the Android relay does not use the work proxy. Leave it blank for direct connections.
-5. Enter the hotspot raw-RDP allowlist if using the hotspot path.
-6. Tap `Generate`.
-7. Tap `Agent` and share `agent.tnl` to the work PC.
-8. Tap `Client` and share `client.tnl` to the home PC.
-9. Tap `Start`.
+1. Enter the stable relay host or IPv6 address, or leave it blank until you tap `Use IPv6`.
+2. Enter the relay port. The default is `8443`; choose another value from `1024` through `65535` only if your carrier and work proxy allow it.
+3. If the phone has no stable hostname, tap `Detect IPv6`, confirm the shown public IPv6, then tap `Use IPv6`. This fills the relay host and shows the bracketed address the agent can use.
+4. Enter certificate names. Include the stable hostname, or the raw IPv6 literal when using the detected public IPv6 path.
+5. Optionally enter the work agent HTTP proxy, for example `http://proxy.example:8080`. This value is written into `agent.tnl` for the work PC only; the Android relay does not use the work proxy. Leave it blank for direct connections.
+6. Enter the hotspot raw-RDP allowlist if using the hotspot path.
+7. Tap `Generate bundles`.
+8. Tap `Export agent` and share `agent.tnl` to the work PC.
+9. Tap `Export client` and share `client.tnl` to the home PC.
+10. Tap `Start relay`.
 
 ### 2. Keep Android Alive
 
@@ -120,7 +121,7 @@ Start `client.exe`, use the tray `Connect` item, and wait for Remote Desktop to 
 
 ### Android Relay App
 
-The Android app is the normal relay and setup hub.
+The Android app is the normal relay and setup hub. It uses port `8443` by default because normal Android apps cannot bind privileged ports such as `443` without root. If you use a different port, choose a value from `1024` through `65535` and confirm the work proxy can CONNECT to that port.
 
 It:
 
@@ -227,17 +228,17 @@ Do this before depending on the phone relay path.
    Turn phone WiFi off. Start a temporary listener on the phone, for example with Termux:
 
    ```sh
-   nc -6 -l -p 443
+   nc -6 -l -p 8443
    ```
 
-   From an off-network host, connect to the phone's public IPv6 on port 443.
+   From an off-network host, connect to the phone's public IPv6 on port 8443.
 
 2. Verify the corporate proxy can CONNECT to IPv6.
 
    From the work PC:
 
    ```powershell
-   curl -x http://PROXY:PORT -v https://[PHONE_IPV6]:443/
+   curl -x http://PROXY:PORT -v https://[PHONE_IPV6]:8443/
    ```
 
    A successful CONNECT followed by a TLS error or handshake attempt is enough to prove reachability. A `400`, `403`, `502`, or timeout means this phone path is not viable as-is.
@@ -406,6 +407,7 @@ Check:
 Check:
 
 - Foreground notification is visible.
+- Relay address uses an Android-allowed listener port such as `8443`; normal Android apps cannot bind `443`.
 - Battery mode is unrestricted.
 - OEM autostart/protected-app allowlisting is enabled.
 - Phone is on charger.
