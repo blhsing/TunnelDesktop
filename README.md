@@ -118,7 +118,7 @@ Useful checks:
 .\agent-windows-amd64.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
-Use `-proxy http://proxy.example:8080` when the work network requires an explicit HTTP proxy.
+WebSocket mode uses standard proxy environment variables by default, such as `HTTP_PROXY` and `HTTPS_PROXY`. Use `-proxy http://proxy.example:8080` to force a proxy, or `-proxy direct` to bypass proxy discovery.
 
 ### 4. Run Home Client
 
@@ -128,7 +128,7 @@ Start the tray helper with the same room URL:
 .\client-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
-Use the tray `Connect` item and wait for Remote Desktop to open. The client listens on `127.0.0.1:3389` by default and opens one outbound WebSocket to Azure for each local RDP session.
+Use the tray `Connect` item and wait for Remote Desktop to open. The client listens on `127.0.0.1:3389` by default and opens one outbound WebSocket to Azure for each local RDP session. WebSocket mode uses standard proxy environment variables by default.
 
 Console debug mode:
 

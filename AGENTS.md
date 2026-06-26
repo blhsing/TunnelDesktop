@@ -10,6 +10,7 @@ TunnelDesktop is a Go + Android + .NET project for an outbound-only RDP rendezvo
 - A named room URL under `/relay/<room>` is the normal and only user-facing pairing configuration.
 - Do not reintroduce generated client files or file-based pairing artifacts for the normal path.
 - The Azure relay WebSocket endpoint is `/relay/ws` for the overview room and `/relay/<room>/ws` for named rooms.
+- URL-only WebSocket clients should use standard proxy environment variables by default; explicit `-proxy direct` is the bypass path.
 - The Azure relay should stay stateless with respect to credentials; pair sockets by room name unless a stronger explicit authentication design is added.
 - The Android app must not listen for public relay traffic or raw RDP in the normal architecture.
 - `cmd/agent` must remain Windows-service-first. Console mode is debug-only.

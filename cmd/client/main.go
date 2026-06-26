@@ -246,6 +246,9 @@ func (c *config) applyDefaults() {
 	if c.RelayMode == "websocket" && c.RelayAddr == "" {
 		c.RelayAddr = defaultRelayURL
 	}
+	if c.RelayMode == "websocket" && c.Proxy == "" {
+		c.Proxy = "env"
+	}
 	if c.ServerName == "" && c.RelayAddr != "" {
 		c.ServerName = tunnel.HostFromRelayAddress(c.RelayAddr)
 	}
