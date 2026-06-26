@@ -14,7 +14,7 @@ TunnelDesktop is a Go + .NET project for an outbound-only RDP rendezvous tunnel.
 - The home side is the Windows home app in `cmd/client`; do not reintroduce mobile home-agent apps.
 - The Windows home app may keep a lightweight `home-agent` WebSocket open for dashboard presence, but RDP data uses `client` sockets.
 - The Windows home app should remain control-panel/tray-first. Console mode is debug-only.
-- The Windows home app should listen on loopback by default, normally `127.0.0.1:3389`.
+- The Windows home app should listen on loopback by default, normally `127.0.0.1:3390`.
 - `cmd/agent` must remain Windows-service-first. Console mode is debug-only.
 - `cmd/agent-configurator` owns the native Windows setup/configurator GUI for the work agent service.
 - Do not add stealth, anti-monitoring, or obfuscation behavior.

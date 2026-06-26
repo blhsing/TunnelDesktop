@@ -126,7 +126,7 @@ Start the Windows home app with the same room URL:
 .\client-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
-The app opens a friendly control panel and a notification-area icon. Click `Connect` to start the local RDP listener and open Remote Desktop. The default local listener is `127.0.0.1:3389`, and the app opens one outbound WebSocket to Azure for each local RDP session.
+The app opens a friendly control panel and a notification-area icon. Click `Connect` to start the local RDP listener and open Remote Desktop. The default local listener is `127.0.0.1:3390`, avoiding Windows' normal local RDP port `3389`, and the app opens one outbound WebSocket to Azure for each local RDP session.
 
 The home app stores its room URL, local RDP address, and proxy mode in `%APPDATA%\TunnelDesktop\home-client.json`. Console debug mode is still available:
 
@@ -201,7 +201,7 @@ It:
 - A polished control panel with relay room URL, local RDP address, proxy mode, status tiles, room details, and activity log.
 - A notification-area icon with open, connect, stop, Remote Desktop, and quit actions.
 - Persistent home-app presence on the relay dashboard.
-- A loopback RDP listener, normally `127.0.0.1:3389`.
+- A loopback RDP listener, normally `127.0.0.1:3390`.
 - Automatic Remote Desktop launch when the user clicks `Connect`.
 
 ## Security Model
@@ -294,7 +294,7 @@ Check:
 - The agent service is running.
 - Work PC allows RDP.
 - The configured Windows account is allowed to log in remotely.
-- The home app local listen port is not already in use.
+- The home app local listen port is not already in use. If `127.0.0.1:3389` fails on the home PC, use `127.0.0.1:3390`.
 
 ### Azure Relay Status
 

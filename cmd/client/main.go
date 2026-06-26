@@ -30,8 +30,9 @@ import (
 )
 
 const (
-	defaultRelayURL   = "https://test-officialwebsite.azurewebsites.net/relay/workdesk"
-	defaultListenAddr = "127.0.0.1:3389"
+	defaultRelayURL         = "https://test-officialwebsite.azurewebsites.net/relay/workdesk"
+	defaultListenAddr       = "127.0.0.1:3390"
+	legacyDefaultListenAddr = "127.0.0.1:3389"
 )
 
 type config struct {
@@ -435,10 +436,17 @@ func (a *clientApp) currentConfig() config {
 func (a *clientApp) startTunnel(openRDP bool) error {
 	cfg := a.currentConfig()
 	ctx, cancel := context.WithCancel(context.Background())
-	listener, err := net.Listen("tcp", cfg.ListenAddr)
+	listener, cfg, usedFallback, err := listenLocalRDP(cfg)
 	if err != nil {
 		cancel()
-		return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
+		return localListenError(cfg.ListenAddr, err)
+	}
+	if usedFallback {
+		a.setConfig(cfg)
+		if err := saveSettingsConfig(cfg); err != nil {
+			a.appendLog("Could not save fallback local RDP address: %v", err)
+		}
+		a.appendLog("Port 3389 was unavailable; using %s for the home-side RDP listener.", cfg.ListenAddr)
 	}
 
 	a.mu.Lock()
@@ -740,6 +748,9 @@ func loadConfig(configFile, relayURL, listenAddr, proxyFlag string) (config, err
 		cfg.Proxy = strings.TrimSpace(proxyFlag)
 	}
 	cfg.applyDefaults()
+	if strings.TrimSpace(configFile) == "" && strings.TrimSpace(listenAddr) == "" && isLegacyDefaultListenAddr(cfg.ListenAddr) {
+		cfg.ListenAddr = defaultListenAddr
+	}
 	if tunnel.IsWebSocketRelay(cfg.RelayAddr) {
 		normalized, err := normalizeRelayURL(cfg.RelayAddr)
 		if err != nil {
@@ -896,11 +907,14 @@ func (c config) tlsConfig() (*tls.Config, error) {
 }
 
 func run(ctx context.Context, cfg config, openMSTSC bool) error {
-	listener, err := net.Listen("tcp", cfg.ListenAddr)
+	listener, cfg, usedFallback, err := listenLocalRDP(cfg)
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
+		return localListenError(cfg.ListenAddr, err)
 	}
 	defer listener.Close()
+	if usedFallback {
+		log.Printf("port 3389 was unavailable; using %s for the home-side RDP listener", cfg.ListenAddr)
+	}
 	log.Printf("client listening on %s; mstsc should target this address", listener.Addr())
 	if openMSTSC {
 		launchMSTSC(cfg.ListenAddr)
@@ -1149,6 +1163,40 @@ func emptyAs(value, fallback string) string {
 	return value
 }
 
+func listenLocalRDP(cfg config) (net.Listener, config, bool, error) {
+	listener, err := net.Listen("tcp", cfg.ListenAddr)
+	if err == nil {
+		return listener, cfg, false, nil
+	}
+	if !isLegacyDefaultListenAddr(cfg.ListenAddr) {
+		return nil, cfg, false, err
+	}
+
+	fallback := cfg
+	fallback.ListenAddr = defaultListenAddr
+	listener, fallbackErr := net.Listen("tcp", fallback.ListenAddr)
+	if fallbackErr == nil {
+		return listener, fallback, true, nil
+	}
+	return nil, cfg, false, fmt.Errorf("%w; fallback %s also failed: %v", err, fallback.ListenAddr, fallbackErr)
+}
+
+func localListenError(listenAddr string, err error) error {
+	message := fmt.Sprintf("listen %s: %v", listenAddr, err)
+	if isLegacyDefaultListenAddr(listenAddr) {
+		message += ". Port 3389 is Windows' normal Remote Desktop port and may already be in use or reserved on this PC. Set Local RDP address to 127.0.0.1:3390, then connect again."
+	}
+	return errors.New(message)
+}
+
+func isLegacyDefaultListenAddr(listenAddr string) bool {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		return strings.EqualFold(strings.TrimSpace(listenAddr), legacyDefaultListenAddr)
+	}
+	return port == "3389" && (host == "" || host == "127.0.0.1" || strings.EqualFold(host, "localhost"))
+}
+
 func launchMSTSC(listenAddr string) {
 	_ = exec.Command("mstsc.exe", "/v:"+mstscTarget(listenAddr)).Start()
 }
@@ -1157,7 +1205,7 @@ func mstscTarget(listenAddr string) string {
 	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
 		host = "127.0.0.1"
-		port = "3389"
+		port = "3390"
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
