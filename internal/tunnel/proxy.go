@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -106,11 +107,14 @@ func dialHTTPConnect(ctx context.Context, targetAddr string, proxyURL *url.URL) 
 	if err != nil {
 		return nil, fmt.Errorf("read CONNECT response: %w", err)
 	}
+	bodyDetail := ""
 	if resp.Body != nil {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		bodyDetail = proxyErrorBodyDetail(string(data))
 		_ = resp.Body.Close()
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("proxy CONNECT %s via %s failed: %s", targetAddr, proxyLabel, resp.Status)
+		return nil, fmt.Errorf("proxy CONNECT %s via %s failed: %s%s", targetAddr, proxyLabel, resp.Status, proxyErrorDetail(resp, bodyDetail))
 	}
 	ok = true
 	return conn, nil
@@ -124,6 +128,37 @@ func proxyURLForLog(proxyURL *url.URL) string {
 		return proxyURL.Host
 	}
 	return proxyURL.Scheme + "://" + proxyURL.Host
+}
+
+func proxyErrorDetail(resp *http.Response, bodyDetail string) string {
+	if resp == nil {
+		return ""
+	}
+	details := make([]string, 0, 2)
+	if squidError := strings.TrimSpace(resp.Header.Get("X-Squid-Error")); squidError != "" {
+		details = append(details, "X-Squid-Error: "+squidError)
+	}
+	if bodyDetail != "" {
+		details = append(details, bodyDetail)
+	}
+	if len(details) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(details, "; ") + ")"
+}
+
+func proxyErrorBodyDetail(body string) string {
+	body = strings.ToLower(body)
+	switch {
+	case strings.Contains(body, "network is unreachable"):
+		return "network is unreachable"
+	case strings.Contains(body, "connection timed out"):
+		return "connection timed out"
+	case strings.Contains(body, "connection refused"):
+		return "connection refused"
+	default:
+		return ""
+	}
 }
 
 func CanonicalHostPort(addr string) string {

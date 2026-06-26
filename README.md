@@ -401,6 +401,10 @@ Common causes:
 
 If the configurator log shows `proxy CONNECT ... failed: 503 Service Unavailable`, the agent reached the configured HTTP proxy and the proxy returned an error before TLS started.
 
+If the detail includes `X-Squid-Error: ERR_CONNECT_FAIL 101` or `network is unreachable`, the proxy host itself cannot route to the relay target. In the tested environment, `CONNECT portquiz.net:8443` succeeds through the proxy, while IPv6 targets such as `[2001:b400:ea91:617b::54]:8443` and `ipv6.google.com:443` fail with Squid `(101) Network is unreachable`; that means the proxy permits port `8443` but has no working IPv6 egress.
+
+If a proxy returns `407 authenticationrequired`, it must authenticate before it can be evaluated. In the tested Skyhigh Secure Web Gateway case, Windows NTLM authentication allowed IPv4 HTTPS targets, but IPv6-only targets and raw IPv6 literals returned `502 cannotconnect`; that is still not usable IPv6 egress for the phone relay.
+
 Check:
 
 - The relay address in the self-test log is current.
@@ -408,7 +412,7 @@ Check:
 - The work proxy allows `CONNECT` to the relay host and port, for example `8443`.
 - The work proxy can reach the relay host format shown in the bundle. Some proxies do not support raw IPv6 literals even when they support DNS hostnames.
 
-The `Work agent HTTP proxy` field writes the proxy into `agent.tnl` for HTTP `CONNECT`. It is not a plain HTTP relay mode. If the work network allows direct outbound connections, regenerate bundles with that field blank and reinstall the updated `agent.tnl`.
+The `Work agent HTTP proxy` field writes the proxy into `agent.tnl` for HTTP `CONNECT`. It is not a plain HTTP relay mode. If the work network allows direct outbound connections, regenerate bundles with that field blank and reinstall the updated `agent.tnl`. If both the work PC and proxy lack IPv6 egress, use an IPv4-reachable hostname, such as the VPS relay fallback, and regenerate the bundles for that relay.
 
 ### Client Connects But RDP Fails
 

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -229,11 +230,11 @@ func (a *app) runSelfTest() {
 	go func() {
 		a.appendLog("Running self-test with bundle: %s", bundlePath)
 		a.appendLog("Agent executable: %s", exePath)
-		if usingInstalledExe && !sameFileOrPath(installedExePath, opts.AgentPath) {
-			a.appendLog("Using installed agent.exe. Click Install / Update to copy the selected agent executable before testing it.")
+		if usingInstalledExe && !sameFileOrContent(installedExePath, opts.AgentPath) {
+			a.appendLog("Installed agent.exe differs from the selected agent executable. Click Install / Update to copy the selected executable before testing it.")
 		}
-		if usingInstalledBundle && !sameFileOrPath(installedBundlePath, opts.BundlePath) {
-			a.appendLog("Using installed agent.tnl. Click Install / Update to copy the selected bundle before testing it.")
+		if usingInstalledBundle && !sameFileOrContent(installedBundlePath, opts.BundlePath) {
+			a.appendLog("Installed agent.tnl differs from the selected bundle. Click Install / Update to copy the selected bundle before testing it.")
 		}
 		if summary, err := bundleSummaryForLog(bundlePath); err != nil {
 			a.appendLog("Bundle summary unavailable: %v", err)
@@ -265,6 +266,20 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+func sameFileOrContent(left, right string) bool {
+	if sameFileOrPath(left, right) {
+		return true
+	}
+	leftInfo, leftErr := os.Stat(strings.TrimSpace(left))
+	rightInfo, rightErr := os.Stat(strings.TrimSpace(right))
+	if leftErr != nil || rightErr != nil || leftInfo.Size() != rightInfo.Size() {
+		return false
+	}
+	leftHash, leftErr := fileHash(left)
+	rightHash, rightErr := fileHash(right)
+	return leftErr == nil && rightErr == nil && leftHash == rightHash
+}
+
 func sameFileOrPath(left, right string) bool {
 	left = strings.TrimSpace(left)
 	right = strings.TrimSpace(right)
@@ -282,6 +297,21 @@ func sameFileOrPath(left, right string) bool {
 		return strings.EqualFold(left, right)
 	}
 	return strings.EqualFold(filepath.Clean(leftAbs), filepath.Clean(rightAbs))
+}
+
+func fileHash(path string) ([sha256.Size]byte, error) {
+	file, err := os.Open(strings.TrimSpace(path))
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	var sum [sha256.Size]byte
+	copy(sum[:], hash.Sum(nil))
+	return sum, nil
 }
 
 func (a *app) openInstallFolder() {
