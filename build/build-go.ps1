@@ -46,13 +46,17 @@ try {
 
     $targets = @(
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-windows-amd64.exe'; Package = './cmd/agent' },
-        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-installer-windows-amd64.exe'; Package = './cmd/agent-configurator'; Ldflags = '-s -w -H windowsgui' },
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-configurator-windows-amd64.exe'; Package = './cmd/agent-configurator'; Ldflags = '-s -w -H windowsgui' },
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'client-windows-amd64.exe'; Package = './cmd/client' },
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'relay-windows-amd64.exe'; Package = './cmd/relay' },
         @{ GOOS = 'linux'; GOARCH = 'amd64'; Name = 'relay-linux-amd64'; Package = './cmd/relay' },
         @{ GOOS = 'linux'; GOARCH = 'arm64'; Name = 'relay-linux-arm64'; Package = './cmd/relay' }
     )
+
+    $legacyInstaller = Join-Path $out 'agent-installer-windows-amd64.exe'
+    if (Test-Path -LiteralPath $legacyInstaller) {
+        Remove-Item -LiteralPath $legacyInstaller -Force
+    }
 
     foreach ($target in $targets) {
         $env:GOOS = $target.GOOS

@@ -571,7 +571,7 @@ func relaunchElevated(bundleFile, configFile string) error {
 		}
 		return err
 	}
-	fmt.Println("Elevation requested; continue in the UAC-launched installer window")
+	fmt.Println("Elevation requested; continue in the UAC-launched configurator window")
 	return nil
 }
 

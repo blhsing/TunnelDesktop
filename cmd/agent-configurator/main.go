@@ -144,10 +144,6 @@ func (a *app) run(smokeTest bool) error {
 }
 
 func appTitle() string {
-	exe, err := os.Executable()
-	if err == nil && strings.Contains(strings.ToLower(filepath.Base(exe)), "installer") {
-		return "TunnelDesktop Agent Installer"
-	}
 	return "TunnelDesktop Agent Configurator"
 }
 
@@ -215,11 +211,15 @@ func (a *app) runAction(action string) {
 
 func (a *app) runSelfTest() {
 	opts := a.options()
-	exePath, bundlePath := installedPaths(opts.InstallDir)
-	if _, err := os.Stat(exePath); err != nil {
+	installedExePath, installedBundlePath := installedPaths(opts.InstallDir)
+	exePath := installedExePath
+	bundlePath := installedBundlePath
+	usingInstalledExe := fileExists(installedExePath)
+	usingInstalledBundle := fileExists(installedBundlePath)
+	if !usingInstalledExe {
 		exePath = opts.AgentPath
 	}
-	if _, err := os.Stat(bundlePath); err != nil {
+	if !usingInstalledBundle {
 		bundlePath = opts.BundlePath
 	}
 	if exePath == "" || bundlePath == "" {
@@ -227,7 +227,14 @@ func (a *app) runSelfTest() {
 		return
 	}
 	go func() {
-		a.appendLog("Running self-test with %s", bundlePath)
+		a.appendLog("Running self-test with bundle: %s", bundlePath)
+		a.appendLog("Agent executable: %s", exePath)
+		if usingInstalledExe && !sameFileOrPath(installedExePath, opts.AgentPath) {
+			a.appendLog("Using installed agent.exe. Click Install / Update to copy the selected agent executable before testing it.")
+		}
+		if usingInstalledBundle && !sameFileOrPath(installedBundlePath, opts.BundlePath) {
+			a.appendLog("Using installed agent.tnl. Click Install / Update to copy the selected bundle before testing it.")
+		}
 		if summary, err := bundleSummaryForLog(bundlePath); err != nil {
 			a.appendLog("Bundle summary unavailable: %v", err)
 		} else {
@@ -248,6 +255,33 @@ func (a *app) runSelfTest() {
 		}
 		a.appendLog("Self-test OK.")
 	}()
+}
+
+func fileExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func sameFileOrPath(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	if leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo) {
+		return true
+	}
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr != nil || rightErr != nil {
+		return strings.EqualFold(left, right)
+	}
+	return strings.EqualFold(filepath.Clean(leftAbs), filepath.Clean(rightAbs))
 }
 
 func (a *app) openInstallFolder() {
