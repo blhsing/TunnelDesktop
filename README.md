@@ -15,6 +15,7 @@ Raw RDP is never exposed on the public internet listener. Public traffic uses TL
 - [Deliverables](#deliverables)
   - [Android Relay App](#android-relay-app)
   - [Work Agent](#work-agent)
+  - [Agent Installer And Configurator](#agent-installer-and-configurator)
   - [Home Client](#home-client)
   - [Dev Harness And VPS Fallback](#dev-harness-and-vps-fallback)
 - [Security Model](#security-model)
@@ -88,17 +89,20 @@ Do not enable Android VPN lockdown mode for the no-route persistence VPN. Lockdo
 Put these beside each other:
 
 ```text
-agent.exe
+agent-windows-amd64.exe
+agent-installer-windows-amd64.exe
 agent.tnl
 ```
 
-Double-click `agent.exe`. It should request UAC and install the Windows service.
+Run `agent-installer-windows-amd64.exe`. It defaults to `D:\TunnelDesktop\Agent` when `D:` exists, copies the work agent as `agent.exe`, copies `agent.tnl`, installs or updates the `TunnelDesktopAgent` Windows service, configures SCM restart recovery, and starts the service.
+
+Use `agent-configurator-windows-amd64.exe` later to change the installed bundle, start, stop, restart, uninstall, or run the agent self-test.
 
 Check:
 
 ```powershell
-.\agent.exe -status
-.\agent.exe -self-test -bundle .\agent.tnl
+.\agent-windows-amd64.exe -status
+.\agent-windows-amd64.exe -self-test -bundle .\agent.tnl
 ```
 
 ### 4. Run Home Client
@@ -148,6 +152,21 @@ Debug/operations commands:
 ```
 
 Use an explicit proxy address in `agent.tnl`. A LocalSystem Windows service does not inherit the interactive user's WinINET/PAC settings.
+
+### Agent Installer And Configurator
+
+`agent-installer-windows-amd64.exe` and `agent-configurator-windows-amd64.exe` are native Windows GUI builds from `cmd/agent-configurator`.
+
+They:
+
+- Prefer `D:\TunnelDesktop\Agent` as the install directory when `D:` exists.
+- Validate that the selected `.tnl` bundle is an agent bundle.
+- Copy the selected agent binary to `agent.exe` and bundle to `agent.tnl` in the install directory.
+- Install or update the automatic `TunnelDesktopAgent` Windows service.
+- Configure SCM restart recovery for the service.
+- Start, stop, restart, uninstall, refresh status, open the install folder, and run `agent.exe -self-test`.
+
+Service-changing actions request UAC elevation. Status refresh and self-test can run from the normal desktop session.
 
 ### Home Client
 
@@ -268,6 +287,8 @@ Artifacts:
 
 ```text
 dist/bin/agent-windows-amd64.exe
+dist/bin/agent-installer-windows-amd64.exe
+dist/bin/agent-configurator-windows-amd64.exe
 dist/bin/client-windows-amd64.exe
 dist/bin/relay-windows-amd64.exe
 dist/bin/relay-linux-amd64
@@ -426,6 +447,7 @@ The repository has no external deployment target. The deployable outputs are the
 
 ```text
 cmd/agent          Windows service deliverable
+cmd/agent-configurator Windows service installer/configurator GUI
 cmd/client         Windows tray helper deliverable
 cmd/relay          standalone harness / VPS fallback
 internal/tunnel    TLS, auth, CONNECT, yamux, pipe, allowlist
@@ -442,6 +464,7 @@ This repo currently contains:
 
 - Android relay app and gomobile `relaycore.aar`.
 - Windows work agent implemented as a Windows service deliverable.
+- Windows installer/configurator GUI for the work agent service.
 - Windows home client implemented as a tray helper deliverable.
 - Standalone relay and bundle generator for PC testing and VPS fallback.
 - Build scripts for Go binaries, Android AAR, and debug APK.

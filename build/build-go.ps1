@@ -13,6 +13,8 @@ try {
 
     $targets = @(
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-windows-amd64.exe'; Package = './cmd/agent' },
+        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-installer-windows-amd64.exe'; Package = './cmd/agent-configurator'; Ldflags = '-s -w -H windowsgui' },
+        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-configurator-windows-amd64.exe'; Package = './cmd/agent-configurator'; Ldflags = '-s -w -H windowsgui' },
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'client-windows-amd64.exe'; Package = './cmd/client' },
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'relay-windows-amd64.exe'; Package = './cmd/relay' },
         @{ GOOS = 'linux'; GOARCH = 'amd64'; Name = 'relay-linux-amd64'; Package = './cmd/relay' },
@@ -24,7 +26,11 @@ try {
         $env:GOARCH = $target.GOARCH
         $env:CGO_ENABLED = '0'
         $path = Join-Path $out $target.Name
-        go build -trimpath -ldflags '-s -w' -o $path $target.Package
+        $ldflags = '-s -w'
+        if ($target.ContainsKey('Ldflags')) {
+            $ldflags = $target.Ldflags
+        }
+        go build -trimpath -ldflags $ldflags -o $path $target.Package
         if ($LASTEXITCODE -ne 0) { throw "go build failed for $($target.Name)" }
         Write-Host "built $path"
     }

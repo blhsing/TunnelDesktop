@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-TunnelDesktop is a Go + Android project for an RDP rendezvous tunnel. The normal relay is the Android app. The work PC runs `agent.exe` as a Windows service. The home PC runs `client.exe` as a tray helper. `cmd/relay` and `tools/gencerts` are dev harness / VPS fallback utilities, not the normal deployment path.
+TunnelDesktop is a Go + Android project for an RDP rendezvous tunnel. The normal relay is the Android app. The work PC runs `agent.exe` as a Windows service installed/configured by the Windows setup GUI. The home PC runs `client.exe` as a tray helper. `cmd/relay` and `tools/gencerts` are dev harness / VPS fallback utilities, not the normal deployment path.
 
 ## Architecture Rules
 
@@ -10,6 +10,7 @@ TunnelDesktop is a Go + Android project for an RDP rendezvous tunnel. The normal
 - `internal/relaycore` owns relay broker logic and identity generation.
 - `mobile/relaycore` is only the gomobile-safe wrapper around `internal/relaycore`.
 - `cmd/agent` must remain Windows-service-first. Console mode is debug-only.
+- `cmd/agent-configurator` owns the native Windows installer/configurator GUI for the work agent service.
 - `cmd/client` must remain bundle/tray-first. Console mode is debug-only.
 - `.tnl` bundles are the primary user-facing configuration artifact.
 - Do not make users hand-copy PEM files for the normal setup path.
@@ -48,7 +49,7 @@ Build Android debug APK:
 .\build\build-android.ps1
 ```
 
-When `internal/relaycore` or `mobile/relaycore` changes, rebuild the AAR and APK. When `cmd/agent`, `cmd/client`, `cmd/relay`, `internal/tunnel`, or shared bundle types change, run `go test ./...` and `.\build\build-go.ps1`.
+When `internal/relaycore` or `mobile/relaycore` changes, rebuild the AAR and APK. When `cmd/agent`, `cmd/agent-configurator`, `cmd/client`, `cmd/relay`, `internal/tunnel`, or shared bundle types change, run `go test ./...` and `.\build\build-go.ps1`.
 
 ## Tooling Notes
 
@@ -67,6 +68,8 @@ This repo has been built with:
 There is no configured external deploy target for this repo. For this project, "deployable artifacts" means:
 
 - `dist/bin/agent-windows-amd64.exe`
+- `dist/bin/agent-installer-windows-amd64.exe`
+- `dist/bin/agent-configurator-windows-amd64.exe`
 - `dist/bin/client-windows-amd64.exe`
 - `dist/bin/relay-windows-amd64.exe`
 - `dist/bin/relay-linux-amd64`
