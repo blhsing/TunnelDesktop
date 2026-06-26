@@ -162,14 +162,10 @@ class MainActivity : AppCompatActivity() {
                 "Relay Service",
                 actionRow(
                     button("Start relay", primary = true) {
-                        startForegroundService(Intent(this, RelayService::class.java))
-                        prefs.edit().putBoolean("running", true).apply()
-                        refreshStatus()
+                        startRelay()
                     },
                     button("Stop relay", danger = true) {
-                        stopService(Intent(this, RelayService::class.java))
-                        prefs.edit().putBoolean("running", false).apply()
-                        refreshStatus()
+                        stopRelay()
                     }
                 ),
                 autostart,
@@ -229,6 +225,45 @@ class MainActivity : AppCompatActivity() {
         }, "Export $name"))
     }
 
+    private fun startRelay() {
+        try {
+            prefs.edit()
+                .remove("last_error")
+                .putBoolean("running", true)
+                .apply()
+            val intent = Intent(this, RelayService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            refreshStatus("Starting relay")
+        } catch (e: Exception) {
+            val message = e.message ?: e.javaClass.simpleName
+            prefs.edit()
+                .putBoolean("running", false)
+                .putString("last_error", message)
+                .apply()
+            refreshStatus("Start failed: $message")
+            Toast.makeText(this, "Start failed: $message", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun stopRelay() {
+        try {
+            stopService(Intent(this, RelayService::class.java))
+            prefs.edit()
+                .putBoolean("running", false)
+                .remove("last_error")
+                .apply()
+            refreshStatus("Relay stopped")
+        } catch (e: Exception) {
+            val message = e.message ?: e.javaClass.simpleName
+            refreshStatus("Stop failed: $message")
+            Toast.makeText(this, "Stop failed: $message", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun refreshStatus(extra: String = "") {
         refreshPublicIpv6()
         val hasConfig = !prefs.getString("config", "").isNullOrBlank()
@@ -236,6 +271,7 @@ class MainActivity : AppCompatActivity() {
         val hasClient = !prefs.getString("client_bundle", "").isNullOrBlank()
         val relay = Relaycore.status()
         val running = relay == "running"
+        val lastError = prefs.getString("last_error", "") ?: ""
         status.text = if (running) "Relay running" else "Relay stopped"
         status.setTextColor(if (running) success else muted)
         status.background = rounded(if (running) Color.rgb(230, 246, 237) else Color.rgb(239, 242, 245), Color.TRANSPARENT)
@@ -243,6 +279,7 @@ class MainActivity : AppCompatActivity() {
             if (hasConfig) "Relay config ready" else "Relay config missing",
             if (hasAgent) "Agent bundle ready" else "Agent bundle missing",
             if (hasClient) "Client bundle ready" else "Client bundle missing",
+            if (lastError.isNotBlank()) "Last start error: $lastError" else "",
             extra
         ).filter { it.isNotBlank() }.joinToString("\n")
     }
