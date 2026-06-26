@@ -15,6 +15,7 @@ TunnelDesktop is a Go + Android + .NET project for an outbound-only RDP rendezvo
 - The Android app must not listen for public relay traffic or raw RDP in the normal architecture.
 - The Android UI should show the phone's detected hotspot/private IPv4 address for setup visibility.
 - The Android home-agent WebSocket should report the detected hotspot/private IPv4 address so the Azure dashboard can display it.
+- The displayed Android phone IP is status-only; do not present it as an RDP endpoint unless the architecture is explicitly changed to add an Android listener.
 - `cmd/agent` must remain Windows-service-first. Console mode is debug-only.
 - `cmd/agent-configurator` owns the native Windows setup/configurator GUI for the work agent service.
 - `cmd/client` must remain tray-first. Console mode is debug-only.

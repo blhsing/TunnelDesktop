@@ -33,6 +33,7 @@ The room name is the path segment after `/relay/`. The first agent to use a room
 - [Troubleshooting](#troubleshooting)
   - [Agent Self-Test Fails Through Proxy](#agent-self-test-fails-through-proxy)
   - [Client Connects But RDP Fails](#client-connects-but-rdp-fails)
+  - [RDP To The Android Phone IP Times Out](#rdp-to-the-android-phone-ip-times-out)
   - [Android Home Agent Does Not Stay Connected](#android-home-agent-does-not-stay-connected)
   - [Azure Relay Status](#azure-relay-status)
   - [Gradle Cannot Download Dependencies](#gradle-cannot-download-dependencies)
@@ -166,7 +167,7 @@ Roles:
 - `probe`: self-test connection.
 - `dashboard`: browser status stream.
 
-The dashboard shows work-agent presence, Android home-agent presence, active stream counts, and the hotspot/private IPv4 address reported by the Android app.
+The dashboard shows work-agent presence, Android home-agent presence, active stream counts, and the phone's private IPv4 address reported by the Android app. The phone IP is status-only; the Android app does not listen for RDP.
 
 ### Work Agent
 
@@ -212,7 +213,7 @@ The Android app:
 - Keeps an outbound `home-agent` WebSocket for relay presence/status.
 - Reports the detected hotspot/private IPv4 address to the relay dashboard.
 - Copies the matching work-agent and home-client commands.
-- Shows and copies the phone's detected hotspot/private IPv4 address.
+- Shows and copies the phone's detected hotspot/private IPv4 address for status visibility.
 - Uses a foreground service, boot receiver, watchdog receiver, and optional persistence controls.
 
 ### Standalone Relay Harness
@@ -325,6 +326,18 @@ Check:
 - Work PC allows RDP.
 - The configured Windows account is allowed to log in remotely.
 - The local client listen port is not already in use.
+
+### RDP To The Android Phone IP Times Out
+
+This is expected in the Azure relay architecture. The Android app is an outbound status home-agent only; it does not listen for RDP on the phone hotspot/private IP.
+
+Run the Windows home client on the home PC instead:
+
+```powershell
+.\client-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/b
+```
+
+Then connect Remote Desktop to the home client's local listener, normally `127.0.0.1:3389`.
 
 ### Android Home Agent Does Not Stay Connected
 

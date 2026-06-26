@@ -133,7 +133,7 @@ class MainActivity : AppCompatActivity() {
                 "Phone Network",
                 phoneNetwork,
                 actionRow(
-                    button("Copy hotspot IP") { copyHotspotIp() },
+                    button("Copy phone IP") { copyPhoneIp() },
                     button("Refresh") { refreshStatus("Network refreshed") }
                 )
             )
@@ -254,14 +254,14 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
     }
 
-    private fun copyHotspotIp() {
+    private fun copyPhoneIp() {
         val candidate = PhoneNetwork.privateIpv4Candidates().firstOrNull()
         if (candidate == null) {
-            Toast.makeText(this, "No hotspot IP detected", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No phone IP detected", Toast.LENGTH_SHORT).show()
             return
         }
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("TunnelDesktop hotspot IP", candidate.address))
+        clipboard.setPrimaryClip(ClipData.newPlainText("TunnelDesktop phone IP", candidate.address))
         Toast.makeText(this, "Copied ${candidate.address}", Toast.LENGTH_SHORT).show()
     }
 
@@ -269,12 +269,13 @@ class MainActivity : AppCompatActivity() {
         val candidates = PhoneNetwork.privateIpv4Candidates()
         val primary = candidates.firstOrNull()
         if (primary == null) {
-            return "Hotspot IP: not detected\nPrivate IPv4: none"
+            return "Phone IP: not detected\nPrivate IPv4: none\nRDP listener: none on Android"
         }
         val others = candidates.drop(1)
         return listOf(
-            "Hotspot IP: ${primary.address}",
+            "Phone IP: ${primary.address}",
             "Interface: ${primary.interfaceName}",
+            "RDP listener: none on Android",
             if (others.isNotEmpty()) {
                 "Other private IPv4: " + others.joinToString(", ") { "${it.address} (${it.interfaceName})" }
             } else {

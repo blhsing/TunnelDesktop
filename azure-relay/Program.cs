@@ -320,7 +320,7 @@ static string DashboardHtml(string room = "")
           <th>Room</th>
           <th>Work Agent</th>
           <th>Home Agent</th>
-          <th>Hotspot IP</th>
+          <th>Phone IP</th>
           <th>Active Pairs</th>
           <th>Last Client</th>
         </tr>
@@ -387,7 +387,7 @@ static string DashboardHtml(string room = "")
         setValue(homeStatus, homeAgents > 0 ? "Connected" : "Waiting", homeAgents > 0 ? "ok" : "warn");
         const hotspotIps = rooms.map(r => r.home_agent_hotspot_ip).filter(Boolean);
         homeDetail.textContent = `${homeAgents} Android home-agent status connection${homeAgents === 1 ? "" : "s"}.` +
-          (hotspotIps.length ? ` Hotspot: ${hotspotIps.join(", ")}.` : "");
+          (hotspotIps.length ? ` Phone IP: ${hotspotIps.join(", ")}.` : "");
         streamStatus.textContent = activePairs.toString();
         streamDetail.textContent = activePairs === 0 ? "No active RDP streams." : `${activePairs} RDP stream${activePairs === 1 ? "" : "s"} bridged.`;
 
@@ -403,7 +403,7 @@ static string DashboardHtml(string room = "")
             <td><code>${esc(r.id)}</code></td>
             <td>${pill(workConnected, workConnected ? "connected" : "waiting")}<br><span class="subtle">${r.waiting_agents || 0} idle<br>${esc(fmt(r.last_agent_connected_at))}</span></td>
             <td>${pill(!!r.home_agent_connected, r.home_agent_connected ? "connected" : "waiting")}<br><span class="subtle">${esc(r.home_agent_remote || "")}<br>${esc(fmt(r.home_agent_connected_at))}</span></td>
-            <td>${hotspotIp ? `<code>${esc(hotspotIp)}</code>` : '<span class="subtle">not reported</span>'}<br><span class="subtle">${privateIps.map(esc).join("<br>")}</span></td>
+            <td>${hotspotIp ? `<code>${esc(hotspotIp)}</code>` : '<span class="subtle">not reported</span>'}<br><span class="subtle">status only; no Android RDP listener${privateIps.length ? "<br>" + privateIps.map(esc).join("<br>") : ""}</span></td>
             <td>${r.active_pairs || 0}<br><span class="subtle">${r.total_pairs || 0} total</span></td>
             <td><span class="subtle">${esc(r.last_client_remote || "")}<br>${esc(fmt(r.last_client_connected_at))}</span></td>
           </tr>`;
