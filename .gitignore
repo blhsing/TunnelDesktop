@@ -2,11 +2,4 @@ dist/
 bin/
 obj/
 *.exe
-*.aar
 *.syso
-android/app/libs/*.jar
-*.apk
-android/.gradle/
-android/build/
-android/app/build/
-android/local.properties

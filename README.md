@@ -1,6 +1,6 @@
 # TunnelDesktop
 
-TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses a .NET Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The work agent, home client, and Android home agent all connect out to that service over HTTPS WebSockets.
+TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses a .NET Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The work-side Windows service and the home-side Windows app both connect out to that service over HTTPS WebSockets.
 
 Configuration is a single shared relay room URL. For example:
 
@@ -8,7 +8,7 @@ Configuration is a single shared relay room URL. For example:
 https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
-The room name is the path segment after `/relay/`. The first agent to use a room creates it in memory, and later agents join the same room by using the same URL.
+The room name is the path segment after `/relay/`. The first endpoint to use a room creates it in memory, and later endpoints join the same room by using the same URL.
 
 ## Table Of Contents
 
@@ -17,26 +17,20 @@ The room name is the path segment after `/relay/`. The first agent to use a room
   - [1. Deploy Azure Relay](#1-deploy-azure-relay)
   - [2. Choose A Room URL](#2-choose-a-room-url)
   - [3. Install Work Agent](#3-install-work-agent)
-  - [4. Run Home Client](#4-run-home-client)
-  - [5. Run Android Home Agent](#5-run-android-home-agent)
+  - [4. Run Home App](#4-run-home-app)
 - [Deliverables](#deliverables)
   - [Azure Relay Web Service](#azure-relay-web-service)
   - [Work Agent](#work-agent)
   - [Agent Configurator](#agent-configurator)
-  - [Home Client](#home-client)
-  - [Android Home Agent](#android-home-agent)
-  - [Standalone Relay Harness](#standalone-relay-harness)
+  - [Home App](#home-app)
 - [Security Model](#security-model)
 - [Build Prerequisites](#build-prerequisites)
 - [Build Commands](#build-commands)
 - [URL Configuration](#url-configuration)
 - [Troubleshooting](#troubleshooting)
   - [Agent Self-Test Fails Through Proxy](#agent-self-test-fails-through-proxy)
-  - [Client Connects But RDP Fails](#client-connects-but-rdp-fails)
-  - [RDP To The Android Phone IP Times Out](#rdp-to-the-android-phone-ip-times-out)
-  - [Android Home Agent Does Not Stay Connected](#android-home-agent-does-not-stay-connected)
+  - [Home App Connects But RDP Fails](#home-app-connects-but-rdp-fails)
   - [Azure Relay Status](#azure-relay-status)
-  - [Gradle Cannot Download Dependencies](#gradle-cannot-download-dependencies)
 - [Development](#development)
 - [Repository Layout](#repository-layout)
 - [Status](#status)
@@ -46,10 +40,11 @@ The room name is the path segment after `/relay/`. The first agent to use a room
 
 ```text
 Home PC
-  mstsc -> 127.0.0.1:<client port>
+  mstsc -> 127.0.0.1:<home app port>
         |
         v
-client.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+client.exe
+  friendly Windows control panel + tray icon
   outbound WebSocket over HTTPS
         |
         v
@@ -64,6 +59,8 @@ agent.exe Windows service
 ```
 
 The relay groups sockets by room name. A waiting work-agent socket is paired with one home-client socket from the same room, then the relay copies binary WebSocket frames in both directions. The relay does not store credentials or generated client files.
+
+The home app also keeps a lightweight `home-agent` presence WebSocket open while it is running. That presence socket lets the Azure dashboard and the home control panel show whether the home side is online; RDP data still flows only when the home app starts a local listener and Remote Desktop connects to it.
 
 ## Installation
 
@@ -94,7 +91,7 @@ Pick a room name that is easy for you to remember but not obvious to outsiders:
 https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
-Use exactly the same URL on the work agent, home client, and Android home agent.
+Use exactly the same URL on the work agent and the home app.
 
 ### 3. Install Work Agent
 
@@ -121,25 +118,21 @@ Useful checks:
 
 WebSocket mode uses standard proxy environment variables by default, such as `HTTP_PROXY` and `HTTPS_PROXY`. Use `-proxy http://proxy.example:8080` to force a proxy, or `-proxy direct` to bypass proxy discovery.
 
-### 4. Run Home Client
+### 4. Run Home App
 
-Start the tray helper with the same room URL:
+Start the Windows home app with the same room URL:
 
 ```powershell
 .\client-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
-Use the tray `Connect` item and wait for Remote Desktop to open. The client listens on `127.0.0.1:3389` by default and opens one outbound WebSocket to Azure for each local RDP session. WebSocket mode uses standard proxy environment variables by default.
+The app opens a friendly control panel and a notification-area icon. Click `Connect` to start the local RDP listener and open Remote Desktop. The default local listener is `127.0.0.1:3389`, and the app opens one outbound WebSocket to Azure for each local RDP session.
 
-Console debug mode:
+The home app stores its room URL, local RDP address, and proxy mode in `%APPDATA%\TunnelDesktop\home-client.json`. Console debug mode is still available:
 
 ```powershell
 .\client-windows-amd64.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
-
-### 5. Run Android Home Agent
-
-Install the APK, open TunnelDesktop, enter the same relay room URL, and tap `Start`. The Android app keeps an outbound status connection to Azure and provides copy buttons for the work-agent and home-client commands. It does not listen for inbound RDP or proxy traffic.
 
 ## Deliverables
 
@@ -163,11 +156,11 @@ Roles:
 
 - `agent`: work-side idle socket waiting to be paired.
 - `client`: home-side data socket for one RDP connection.
-- `home-agent`: Android outbound status presence.
+- `home-agent`: Windows home app status presence.
 - `probe`: self-test connection.
 - `dashboard`: browser status stream.
 
-The dashboard shows work-agent presence, Android home-agent presence, active stream counts, and the phone's private IPv4 address reported by the Android app. The phone IP is status-only; the Android app does not listen for RDP.
+The dashboard shows work-agent presence, home-app presence, active stream counts, total stream count, and recent remote addresses.
 
 ### Work Agent
 
@@ -175,7 +168,7 @@ The dashboard shows work-agent presence, Android home-agent presence, active str
 
 Default behavior:
 
-- `agent.exe` with no args uses the default relay overview URL.
+- `agent.exe` with no args uses the default relay room URL.
 - `-relay-url <url>` selects a named room.
 - The service keeps a small pool of idle outbound WebSockets to Azure.
 - When Azure pairs a socket, the agent dials `127.0.0.1:3389` and pipes bytes.
@@ -201,24 +194,15 @@ It:
 - Configures SCM restart recovery.
 - Starts, stops, restarts, uninstalls, refreshes status, opens the install folder, and runs `agent.exe -self-test`.
 
-### Home Client
+### Home App
 
-`client.exe` is the secure home-side Windows path. It starts a loopback listener, dials Azure with a WebSocket, and launches `mstsc`.
+`client.exe` is the secure home-side Windows path. It provides:
 
-### Android Home Agent
-
-The Android app:
-
-- Stores a shared relay room URL.
-- Keeps an outbound `home-agent` WebSocket for relay presence/status.
-- Reports the detected hotspot/private IPv4 address to the relay dashboard.
-- Copies the matching work-agent and home-client commands.
-- Shows and copies the phone's detected hotspot/private IPv4 address for status visibility.
-- Uses a foreground service, boot receiver, watchdog receiver, and optional persistence controls.
-
-### Standalone Relay Harness
-
-`cmd/relay` is retained for local protocol experiments around the older direct TLS/yamux listener. It is not the normal Azure deployment path.
+- A polished control panel with relay room URL, local RDP address, proxy mode, status tiles, room details, and activity log.
+- A notification-area icon with open, connect, stop, Remote Desktop, and quit actions.
+- Persistent home-app presence on the relay dashboard.
+- A loopback RDP listener, normally `127.0.0.1:3389`.
+- Automatic Remote Desktop launch when the user clicks `Connect`.
 
 ## Security Model
 
@@ -226,6 +210,7 @@ The Android app:
 - The room name in the URL is the pairing key.
 - The relay never dials the work PC or home PC.
 - The work agent only dials `127.0.0.1:3389` after Azure has paired a same-room home connection.
+- The home app listens on loopback by default, so other LAN devices cannot connect to the local RDP listener unless the user intentionally changes the listen address.
 
 Choose room names that are not obvious. Anyone who knows the room URL can attempt to join that room.
 
@@ -237,17 +222,9 @@ Required:
 
 - Go 1.25+.
 - .NET SDK 8+ for the Azure relay.
-- Android SDK for Android builds.
-- JDK 17+.
-- Gradle, unless using a wrapper in `android/`.
+- `rsrc` for Windows GUI manifest resources; `build\build-go.ps1` installs it under `D:\Go\bin` when missing.
 
-Useful environment variables:
-
-```powershell
-$env:ANDROID_HOME = 'D:\Android\Sdk'
-$env:ANDROID_SDK_ROOT = 'D:\Android\Sdk'
-$env:JAVA_HOME = 'D:\Scoop\apps\temurin17-jdk\current'
-```
+This repo has been built with Go installed under `D:\Scoop` and .NET SDK 9.x publishing the relay as `net8.0`.
 
 ## Build Commands
 
@@ -263,12 +240,6 @@ Build Go binaries:
 .\build\build-go.ps1
 ```
 
-Build the debug APK:
-
-```powershell
-.\build\build-android.ps1
-```
-
 Artifacts:
 
 ```text
@@ -276,10 +247,6 @@ dist\azure-relay\tunneldesktop-azure-relay.zip
 dist\bin\agent-windows-amd64.exe
 dist\bin\agent-configurator-windows-amd64.exe
 dist\bin\client-windows-amd64.exe
-dist\bin\relay-windows-amd64.exe
-dist\bin\relay-linux-amd64
-dist\bin\relay-linux-arm64
-android\app\build\outputs\apk\debug\app-debug.apk
 ```
 
 ## URL Configuration
@@ -296,6 +263,7 @@ Rules:
 - Reusing the same URL joins the same room.
 - The WebSocket endpoint is derived automatically as `/relay/<room>/ws`.
 - The base `/relay/` path is an overview dashboard.
+- No generated pairing files are required for the normal Azure WebSocket path.
 
 ## Troubleshooting
 
@@ -317,36 +285,16 @@ Common causes:
 - The Azure relay has not been deployed or is not running.
 - Local RDP is disabled or not listening on `127.0.0.1:3389`.
 
-### Client Connects But RDP Fails
+### Home App Connects But RDP Fails
 
 Check:
 
+- The home app status tiles show the same room URL as the work agent.
 - The room dashboard shows waiting work-agent sockets.
-- Agent service is running.
+- The agent service is running.
 - Work PC allows RDP.
 - The configured Windows account is allowed to log in remotely.
-- The local client listen port is not already in use.
-
-### RDP To The Android Phone IP Times Out
-
-This is expected in the Azure relay architecture. The Android app is an outbound status home-agent only; it does not listen for RDP on the phone hotspot/private IP.
-
-Run the Windows home client on the home PC instead:
-
-```powershell
-.\client-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/b
-```
-
-Then connect Remote Desktop to the home client's local listener, normally `127.0.0.1:3389`.
-
-### Android Home Agent Does Not Stay Connected
-
-Check:
-
-- The relay URL uses the same room as the work agent and home client.
-- Android has network access.
-- Foreground notification permission is granted.
-- Battery mode is unrestricted if the device aggressively stops background services.
+- The home app local listen port is not already in use.
 
 ### Azure Relay Status
 
@@ -359,19 +307,10 @@ https://test-officialwebsite.azurewebsites.net/relay/workdesk
 The dashboard receives live status over WebSocket. Useful fields:
 
 - waiting work-agent sockets
+- home-app presence
 - active RDP stream pairs
-- Android home-agent presence
+- total stream pairs
 - last home-client source address
-
-### Gradle Cannot Download Dependencies
-
-Set proxy environment variables before Android builds:
-
-```powershell
-$env:HTTPS_PROXY = 'http://proxy.example:8080'
-$env:HTTP_PROXY = 'http://proxy.example:8080'
-.\build\build-android.ps1
-```
 
 ## Development
 
@@ -393,24 +332,14 @@ Rebuild after Windows agent/client changes:
 .\build\build-go.ps1
 ```
 
-Rebuild after Android changes:
-
-```powershell
-.\build\build-android.ps1
-```
-
 ## Repository Layout
 
 ```text
 azure-relay/      .NET Azure App Service WebSocket relay
 cmd/agent         Windows service work-side agent
 cmd/agent-configurator Windows service setup/configurator GUI
-cmd/client        Windows tray helper home-side client
-cmd/relay         standalone TLS/yamux harness
+cmd/client        Windows control-panel/tray home app
 internal/tunnel   TLS, auth, CONNECT, WebSocket, yamux, pipe, allowlist
-internal/relaycore legacy direct relay core
-mobile/relaycore  gomobile wrapper around legacy relaycore
-android/          Android URL-based home-agent app
 build/            build scripts
 ```
 
@@ -423,14 +352,12 @@ This repo currently contains:
 - Named-room URL joining under `/relay/<room>`.
 - Windows work agent implemented as a Windows service deliverable.
 - Windows configurator GUI for installing and managing the work agent service.
-- Windows home client implemented as a tray helper deliverable.
-- Android app for URL-based home-agent status.
-- Build scripts for Go binaries, Azure relay zip, and debug APK.
+- Windows home app implemented as a friendly control-panel and tray deliverable.
+- Build scripts for Go binaries and the Azure relay zip.
 
 ## Current Limitations
 
 - The Azure relay is a simple in-memory broker. Restarting the App Service disconnects active sessions and clears room status.
 - Multiple App Service instances are not supported unless sticky routing or shared broker state is added.
 - The Go work agent supports direct, environment, and basic HTTP proxy URLs. NTLM proxy authentication is not implemented in the service.
-- Android is not an RDP client; use `client.exe` on the home PC for Remote Desktop.
-- Signed Android release packaging is not yet added.
+- The home app is a Windows RDP launcher and tunnel endpoint, not a full RDP client.

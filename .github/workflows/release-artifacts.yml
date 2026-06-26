@@ -1,0 +1,83 @@
+name: Release Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and upload release artifacts
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build artifacts
+        shell: pwsh
+        run: |
+          .\build\build-go.ps1
+          .\build\build-azure-relay.ps1
+
+      - name: Write checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            'dist\bin\agent-windows-amd64.exe',
+            'dist\bin\agent-configurator-windows-amd64.exe',
+            'dist\bin\client-windows-amd64.exe',
+            'dist\azure-relay\tunneldesktop-azure-relay.zip'
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path -LiteralPath $file)) {
+              throw "missing release artifact: $file"
+            }
+          }
+          $lines = Get-FileHash $files -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLowerInvariant())  $((Resolve-Path -LiteralPath $_.Path -Relative) -replace '^\.\\','')"
+          }
+          $lines | Set-Content -LiteralPath 'dist\bin\SHA256SUMS.txt' -Encoding ascii
+
+      - name: Create release if needed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ inputs.tag }}'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --generate-notes
+          }
+
+      - name: Upload release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ inputs.tag }}'
+          gh release upload $tag `
+            'dist\azure-relay\tunneldesktop-azure-relay.zip' `
+            'dist\bin\agent-windows-amd64.exe' `
+            'dist\bin\agent-configurator-windows-amd64.exe' `
+            'dist\bin\client-windows-amd64.exe' `
+            'dist\bin\SHA256SUMS.txt' `
+            --clobber

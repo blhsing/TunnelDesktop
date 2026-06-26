@@ -574,7 +574,7 @@ func relayDialHint(err error, cfg config) string {
 	if strings.Contains(errText, "dial proxy") {
 		return fmt.Sprintf("Confirm that the configured proxy %s is reachable from this PC.", tunnel.ProxySpecForLog(cfg.Proxy))
 	}
-	return "Confirm that the Android relay is running, the relay address is current, and the selected relay port is reachable from this PC."
+	return "Confirm that the Azure relay URL is current, WebSockets are enabled, and the selected relay endpoint is reachable from this PC."
 }
 
 func relayPortForHint(addr string) string {

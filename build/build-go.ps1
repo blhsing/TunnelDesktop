@@ -47,15 +47,14 @@ try {
     $targets = @(
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-windows-amd64.exe'; Package = './cmd/agent' },
         @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-configurator-windows-amd64.exe'; Package = './cmd/agent-configurator'; Ldflags = '-s -w -H windowsgui' },
-        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'client-windows-amd64.exe'; Package = './cmd/client' },
-        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'relay-windows-amd64.exe'; Package = './cmd/relay' },
-        @{ GOOS = 'linux'; GOARCH = 'amd64'; Name = 'relay-linux-amd64'; Package = './cmd/relay' },
-        @{ GOOS = 'linux'; GOARCH = 'arm64'; Name = 'relay-linux-arm64'; Package = './cmd/relay' }
+        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'client-windows-amd64.exe'; Package = './cmd/client'; Ldflags = '-s -w -H windowsgui' }
     )
 
-    $legacyInstaller = Join-Path $out 'agent-installer-windows-amd64.exe'
-    if (Test-Path -LiteralPath $legacyInstaller) {
-        Remove-Item -LiteralPath $legacyInstaller -Force
+    $legacyArtifactPatterns = @('agent-installer-windows-amd64.exe', 'relay-*')
+    foreach ($legacyArtifactPattern in $legacyArtifactPatterns) {
+        Get-ChildItem -LiteralPath $out -Filter $legacyArtifactPattern -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Force
+        }
     }
 
     foreach ($target in $targets) {
@@ -69,6 +68,13 @@ try {
         }
         go build -trimpath -ldflags $ldflags -o $path $target.Package
         if ($LASTEXITCODE -ne 0) { throw "go build failed for $($target.Name)" }
+        if (-not (Test-Path -LiteralPath $path)) {
+            throw "go build did not produce $path. Endpoint protection may have quarantined the generated executable."
+        }
+        Start-Sleep -Seconds 3
+        if (-not (Test-Path -LiteralPath $path)) {
+            throw "$path was removed after build. Endpoint protection may have quarantined the generated executable."
+        }
         Write-Host "built $path"
     }
 }

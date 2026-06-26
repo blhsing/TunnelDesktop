@@ -1,7 +1,0 @@
-<resources>
-    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="colorAccent">#2F6F73</item>
-    </style>
-</resources>
