@@ -235,6 +235,7 @@ class MainActivity : AppCompatActivity() {
                 .putString("agent_bundle", result.getString("agent_bundle"))
                 .putString("client_bundle", result.getString("client_bundle"))
                 .putBoolean("autostart", true)
+                .remove("last_error")
                 .apply()
             refreshStatus("Generated bundles")
             Toast.makeText(this, "Bundles generated", Toast.LENGTH_SHORT).show()
@@ -274,6 +275,7 @@ class MainActivity : AppCompatActivity() {
             if (config.isBlank()) {
                 throw IllegalStateException("Generate bundles before starting the relay")
             }
+            requireConfigMatchesSelectedPort(config)
             AndroidRelayPorts.requireConfigListenPort(config)
             prefs.edit()
                 .remove("last_error")
@@ -314,9 +316,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshStatus(extra: String = "") {
         refreshPublicIpv6()
-        val hasConfig = !prefs.getString("config", "").isNullOrBlank()
+        val config = prefs.getString("config", "") ?: ""
+        val hasConfig = config.isNotBlank()
         val hasAgent = !prefs.getString("agent_bundle", "").isNullOrBlank()
         val hasClient = !prefs.getString("client_bundle", "").isNullOrBlank()
+        val selectedPort = AndroidRelayPorts.displayPort(relayPort.text.toString())
+        val configPort = configPortOrNull(config)
+        val stalePort = configPort != null && configPort != selectedPort
         val relay = Relaycore.status()
         val requestedRunning = prefs.getBoolean("running", false)
         val lastError = prefs.getString("last_error", "") ?: ""
@@ -334,10 +340,30 @@ class MainActivity : AppCompatActivity() {
             if (hasConfig) "Relay config ready" else "Relay config missing",
             if (hasAgent) "Agent bundle ready" else "Agent bundle missing",
             if (hasClient) "Client bundle ready" else "Client bundle missing",
+            if (stalePort) "Bundles use relay port $configPort; generate bundles to use $selectedPort" else "",
             if (requestedRunning && relay != "running" && lastError.isBlank()) "Waiting for relay service to report running" else "",
             if (lastError.isNotBlank()) "Last start error: $lastError" else "",
             extra
         ).filter { it.isNotBlank() }.joinToString("\n")
+    }
+
+    private fun requireConfigMatchesSelectedPort(config: String) {
+        val selectedPort = AndroidRelayPorts.requirePort(relayPort.text.toString())
+        val configPort = AndroidRelayPorts.configListenPort(config)
+        if (configPort != selectedPort) {
+            throw IllegalStateException(
+                "Bundles were generated for relay port $configPort, but the relay port field is $selectedPort. Tap Generate bundles, then export the updated agent/client bundles."
+            )
+        }
+    }
+
+    private fun configPortOrNull(config: String): Int? {
+        if (config.isBlank()) return null
+        return try {
+            AndroidRelayPorts.configListenPort(config)
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun updateRelayToggle(relay: String, requestedRunning: Boolean, lastError: String) {

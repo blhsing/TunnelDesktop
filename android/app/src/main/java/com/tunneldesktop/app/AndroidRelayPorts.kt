@@ -42,11 +42,15 @@ object AndroidRelayPorts {
     }
 
     fun requireConfigListenPort(configJSON: String): Int {
-        val listenAddr = JSONObject(configJSON).optString("listen_addr", "").ifBlank { ":$DEFAULT_PORT" }
-        val port = portFromAddress(listenAddr)
-            ?: throw IllegalStateException("Relay config listen_addr must include a port")
+        val port = configListenPort(configJSON)
         requireAllowedPort(port)
         return port
+    }
+
+    fun configListenPort(configJSON: String): Int {
+        val listenAddr = JSONObject(configJSON).optString("listen_addr", "").ifBlank { ":$DEFAULT_PORT" }
+        return portFromAddress(listenAddr)
+            ?: throw IllegalStateException("Relay config listen_addr must include a port")
     }
 
     private fun requireAllowedPort(port: Int) {
@@ -55,7 +59,7 @@ object AndroidRelayPorts {
         }
         if (port < MIN_LISTEN_PORT) {
             throw IllegalStateException(
-                "Android cannot listen on port $port without root. Use port $DEFAULT_PORT or another port 1024-65535, then regenerate bundles."
+                "Saved relay config listens on port $port, but Android cannot use ports below $MIN_LISTEN_PORT without root. Set relay port to $DEFAULT_PORT or another port 1024-65535, then generate bundles again."
             )
         }
     }

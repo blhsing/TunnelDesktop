@@ -408,6 +408,7 @@ Check:
 
 - Foreground notification is visible.
 - Relay address uses an Android-allowed listener port such as `8443`; normal Android apps cannot bind `443`.
+- If you change the relay port, tap `Generate bundles` again and re-export the updated agent/client bundles.
 - Battery mode is unrestricted.
 - OEM autostart/protected-app allowlisting is enabled.
 - Phone is on charger.
