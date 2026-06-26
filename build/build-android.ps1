@@ -27,10 +27,6 @@ function Use-GradleProxyFromEnv {
     }
 }
 
-if (-not (Test-Path (Join-Path $root 'android/app/libs/relaycore.aar'))) {
-    & (Join-Path $PSScriptRoot 'build-aar.ps1')
-}
-
 Use-GradleProxyFromEnv
 
 Push-Location $android

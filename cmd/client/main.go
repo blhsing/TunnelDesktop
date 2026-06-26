@@ -18,11 +18,13 @@ import (
 
 	"github.com/getlantern/systray"
 
-	"tunneldesktop/internal/relaycore"
 	"tunneldesktop/internal/tunnel"
 )
 
+const defaultRelayURL = "https://test-officialwebsite.azurewebsites.net/relay/"
+
 type config struct {
+	RelayMode  string `json:"relay_mode"`
 	ListenAddr string `json:"listen_addr"`
 	RelayAddr  string `json:"relay_addr"`
 	Proxy      string `json:"proxy"`
@@ -45,27 +47,18 @@ type trayState struct {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	var bundleFile string
 	var configFile string
-	var importFile string
+	var relayURL string
 	var consoleMode bool
-	flag.StringVar(&bundleFile, "bundle", "", "client.tnl bundle file")
 	flag.StringVar(&configFile, "config", "", "legacy JSON config file")
-	flag.StringVar(&importFile, "import", "", "import client.tnl into the per-user config directory and exit")
+	flag.StringVar(&relayURL, "relay-url", "", "Azure relay service URL")
 	flag.BoolVar(&consoleMode, "console", false, "run in the foreground instead of the system tray")
 	flag.Parse()
 
-	if importFile != "" {
-		if err := importBundle(importFile); err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("client.tnl imported")
-		return
+	if configFile == "" && relayURL == "" {
+		relayURL = defaultRelayURL
 	}
-	if bundleFile == "" && configFile == "" {
-		bundleFile = findClientBundle()
-	}
-	cfg, err := loadConfig(bundleFile, configFile)
+	cfg, err := loadConfig(configFile, relayURL)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -81,28 +74,11 @@ func main() {
 	systray.Run(func() { state.onReady() }, func() { state.stop() })
 }
 
-func loadConfig(bundleFile, configFile string) (config, error) {
-	if bundleFile != "" {
-		data, err := os.ReadFile(bundleFile)
-		if err != nil {
-			return config{}, fmt.Errorf("read bundle: %w", err)
-		}
-		bundle, err := relaycore.DecodeBundle(string(data))
-		if err != nil {
-			return config{}, err
-		}
-		if bundle.Role != "client" {
-			return config{}, fmt.Errorf("bundle role is %q, want client", bundle.Role)
-		}
+func loadConfig(configFile, relayURL string) (config, error) {
+	if strings.TrimSpace(relayURL) != "" {
 		cfg := config{
-			ListenAddr: bundle.ListenAddr,
-			RelayAddr:  bundle.RelayAddr,
-			Proxy:      bundle.Proxy,
-			CAPEM:      bundle.CAPEM,
-			CertPEM:    bundle.CertPEM,
-			KeyPEM:     bundle.KeyPEM,
-			ServerName: bundle.ServerName,
-			Token:      bundle.Token,
+			RelayMode: "websocket",
+			RelayAddr: strings.TrimSpace(relayURL),
 		}
 		cfg.applyDefaults()
 		return cfg, cfg.validate()
@@ -233,6 +209,9 @@ func handleLocalConn(ctx context.Context, cfg config, localConn net.Conn) {
 }
 
 func dialRelay(ctx context.Context, cfg config) (net.Conn, error) {
+	if cfg.RelayMode == "websocket" || tunnel.IsWebSocketRelay(cfg.RelayAddr) {
+		return tunnel.DialWebSocketStream(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleClient, cfg.Token)
+	}
 	tlsConfig, err := cfg.tlsConfig()
 	if err != nil {
 		return nil, err
@@ -254,11 +233,21 @@ func dialRelay(ctx context.Context, cfg config) (net.Conn, error) {
 }
 
 func (c *config) applyDefaults() {
+	if c.RelayMode == "" {
+		if tunnel.IsWebSocketRelay(c.RelayAddr) {
+			c.RelayMode = "websocket"
+		} else {
+			c.RelayMode = "tls"
+		}
+	}
 	if c.ListenAddr == "" {
 		c.ListenAddr = "127.0.0.1:3389"
 	}
+	if c.RelayMode == "websocket" && c.RelayAddr == "" {
+		c.RelayAddr = defaultRelayURL
+	}
 	if c.ServerName == "" && c.RelayAddr != "" {
-		c.ServerName = serverNameFromAddr(c.RelayAddr)
+		c.ServerName = tunnel.HostFromRelayAddress(c.RelayAddr)
 	}
 }
 
@@ -266,19 +255,22 @@ func (c config) validate() error {
 	if c.RelayAddr == "" {
 		return fmt.Errorf("relay_addr is required")
 	}
-	if c.CAFile == "" && c.CAPEM == "" {
+	if c.RelayMode != "tls" && c.RelayMode != "websocket" {
+		return fmt.Errorf("unsupported relay_mode %q", c.RelayMode)
+	}
+	if c.RelayMode == "tls" && c.CAFile == "" && c.CAPEM == "" {
 		return fmt.Errorf("ca_file or ca_pem is required")
 	}
-	if c.CertFile == "" && c.CertPEM == "" {
+	if c.RelayMode == "tls" && c.CertFile == "" && c.CertPEM == "" {
 		return fmt.Errorf("cert_file or cert_pem is required")
 	}
-	if c.KeyFile == "" && c.KeyPEM == "" {
+	if c.RelayMode == "tls" && c.KeyFile == "" && c.KeyPEM == "" {
 		return fmt.Errorf("key_file or key_pem is required")
 	}
-	if c.ServerName == "" {
+	if c.RelayMode == "tls" && c.ServerName == "" {
 		return fmt.Errorf("server_name is required")
 	}
-	if c.Token == "" {
+	if c.RelayMode == "tls" && c.Token == "" {
 		return fmt.Errorf("token is required")
 	}
 	return nil
@@ -295,45 +287,6 @@ func (c config) tlsConfig() (*tls.Config, error) {
 		return tunnel.ClientTLSConfigFromPEM(c.CAPEM, c.CertPEM, c.KeyPEM, c.ServerName)
 	}
 	return tunnel.ClientTLSConfig(c.CAFile, c.CertFile, c.KeyFile, c.ServerName)
-}
-
-func importBundle(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	if _, err := relaycore.DecodeBundle(string(data)); err != nil {
-		return err
-	}
-	dst := userBundlePath()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, 0o600)
-}
-
-func findClientBundle() string {
-	userPath := userBundlePath()
-	if _, err := os.Stat(userPath); err == nil {
-		return userPath
-	}
-	return defaultBundlePath("client.tnl")
-}
-
-func userBundlePath() string {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return defaultBundlePath("client.tnl")
-	}
-	return filepath.Join(base, "TunnelDesktop", "client.tnl")
-}
-
-func defaultBundlePath(name string) string {
-	exePath, err := os.Executable()
-	if err != nil {
-		return name
-	}
-	return filepath.Join(filepath.Dir(exePath), name)
 }
 
 func launchMSTSC(listenAddr string) {

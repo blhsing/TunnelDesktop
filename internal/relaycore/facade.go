@@ -112,10 +112,6 @@ func RecentLogs() string {
 	return string(data)
 }
 
-func GenerateSetup(configJSON string) (string, error) {
-	return GenerateSetupJSON(configJSON)
-}
-
 func logLine(format string, args ...any) {
 	line := fmt.Sprintf(format, args...)
 	defaultRelay.Lock()

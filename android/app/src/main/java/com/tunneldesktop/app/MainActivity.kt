@@ -29,33 +29,19 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import org.json.JSONArray
-import org.json.JSONObject
-import java.net.Inet4Address
-import relaycore.Relaycore
-import java.net.Inet6Address
-import java.net.NetworkInterface
-import java.util.Collections
 
 class MainActivity : AppCompatActivity() {
     private companion object {
-        const val LEGACY_DEFAULT_RAW_ALLOWLIST = "192.168.43.0/24"
+        const val DEFAULT_RELAY_URL = "https://test-officialwebsite.azurewebsites.net/relay/workdesk"
     }
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var relayAddr: EditText
-    private lateinit var relayPort: EditText
-    private lateinit var relayHosts: EditText
-    private lateinit var agentProxy: EditText
-    private lateinit var rawAllow: EditText
-    private lateinit var publicIpv6: TextView
-    private lateinit var privateIp: TextView
+    private lateinit var relayUrl: EditText
     private lateinit var status: TextView
-    private lateinit var connectionState: TextView
-    private lateinit var bundleState: TextView
-    private lateinit var logs: TextView
-    private lateinit var relayToggle: Button
-    private var lastAutoRawAllowlist = ""
+    private lateinit var details: TextView
+    private lateinit var commands: TextView
+    private lateinit var toggle: Button
+
     private val statusHandler = Handler(Looper.getMainLooper())
     private val statusRefresh = object : Runnable {
         override fun run() {
@@ -63,16 +49,14 @@ class MainActivity : AppCompatActivity() {
             statusHandler.postDelayed(this, 2000)
         }
     }
-    private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == "running" || key == "last_error" || key == "config") {
-            runOnUiThread { refreshStatus() }
-        }
+    private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        runOnUiThread { refreshStatus() }
     }
 
     private val ink = Color.rgb(31, 41, 55)
     private val muted = Color.rgb(93, 104, 116)
     private val page = Color.rgb(246, 248, 247)
-    private val panel = Color.rgb(255, 255, 255)
+    private val panel = Color.WHITE
     private val line = Color.rgb(211, 219, 224)
     private val accent = Color.rgb(47, 111, 115)
     private val accentSoft = Color.rgb(227, 244, 242)
@@ -84,20 +68,14 @@ class MainActivity : AppCompatActivity() {
         prefs = deviceProtectedStorageContext().getSharedPreferences("relay", MODE_PRIVATE)
         requestNotifications()
         buildUi()
-        Relaycore.setLogCallback { line ->
-            runOnUiThread {
-                logs.append(line + "\n")
-            }
-        }
         refreshStatus()
     }
 
     override fun onResume() {
         super.onResume()
         prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
-        refreshStatus()
         statusHandler.removeCallbacks(statusRefresh)
-        statusHandler.postDelayed(statusRefresh, 2000)
+        statusHandler.post(statusRefresh)
     }
 
     override fun onPause() {
@@ -117,45 +95,11 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        relayAddr = edit("Hostname or public IPv6", savedRelayHost())
-        relayPort = edit(AndroidRelayPorts.DEFAULT_PORT.toString(), savedRelayPort())
-        relayHosts = edit("Hostname, public IPv6", prefs.getString("relay_hosts", "") ?: "")
-        agentProxy = edit("Blank for direct, or http://proxy.example:8080", savedAgentProxy())
-        val initialRawAllowlist = suggestedRawAllowlist(privateIpv4Candidates())
-        if (initialRawAllowlist != null) {
-            lastAutoRawAllowlist = initialRawAllowlist
-        }
-        rawAllow = edit(initialRawAllowlist ?: "Detected hotspot CIDR", savedRawAllowlist(initialRawAllowlist))
-        publicIpv6 = TextView(this).apply {
-            textSize = 13f
-            setTextColor(ink)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = rounded(accentSoft, Color.TRANSPARENT)
-            setTextIsSelectable(true)
-        }
-        privateIp = TextView(this).apply {
-            textSize = 13f
-            setTextColor(ink)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = rounded(Color.rgb(239, 246, 255), Color.TRANSPARENT)
-            setTextIsSelectable(true)
-        }
-        status = TextView(this).apply {
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-        }
-        connectionState = TextView(this).apply {
-            textSize = 13f
-            setTextColor(ink)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = rounded(Color.rgb(245, 247, 250), Color.TRANSPARENT)
-            setTextIsSelectable(true)
-        }
-        bundleState = TextView(this).apply {
-            textSize = 13f
-            setTextColor(muted)
-        }
+        relayUrl = edit(savedRelayUrl())
+        status = statusLabel()
+        details = infoBox()
+        commands = infoBox()
+        toggle = button("Start", primary = true) { toggleHomeAgent() }
 
         val autostart = CheckBox(this).apply {
             text = "Start on boot"
@@ -166,595 +110,134 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit().putBoolean("autostart", checked).apply()
             }
         }
-        logs = TextView(this).apply {
-            textSize = 12f
-            setTextColor(ink)
-            setTextIsSelectable(true)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            text = recentLogText()
-        }
-        relayToggle = button("Start relay", primary = true) {
-            toggleRelay()
-        }
-        val logScroll = ScrollView(this).apply {
-            background = rounded(Color.rgb(249, 250, 251), line)
-            isVerticalScrollBarEnabled = true
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(180))
-            addView(logs)
-        }
 
-        content.addView(title("TunnelDesktop Relay"))
+        content.addView(title("TunnelDesktop Home Agent"))
         addSpaced(content, status, 10)
         addSpaced(
             content,
             section(
-                "Relay Endpoint",
-                field("Relay host or IPv6", relayAddr),
-                field("Relay port", relayPort),
-                publicIpv6,
-                privateIp,
+                "Relay Room",
+                field("Shared relay URL", relayUrl),
                 actionRow(
-                    button("Detect IPv6") { refreshPublicIpv6() },
-                    button("Use IPv6") { applyPublicIpv6() }
+                    button("Use default") { applyDefaultUrl() },
+                    button("Copy URL") { copyText("TunnelDesktop relay URL", normalizedRelayUrl()) }
                 ),
-                actionRow(
-                    button("Copy IPv6") { copyPublicIpv6() },
-                    button("Copy LAN RDP") { copyPrivateRdp() }
-                ),
-                actionRow(
-                    button("Refresh") { refreshStatus() }
-                )
+                commands
             )
         )
         addSpaced(
             content,
             section(
-                "Bundles",
-                field("Certificate names", relayHosts),
-                field("Work agent HTTP proxy", agentProxy),
-                field("Hotspot allowlist", rawAllow),
-                button("Generate bundles", primary = true) { generateIdentity() },
-                bundleState,
-                actionRow(
-                    button("Export agent") { shareBundle("agent.tnl", prefs.getString("agent_bundle", "") ?: "") },
-                    button("Export client") { shareBundle("client.tnl", prefs.getString("client_bundle", "") ?: "") }
-                )
-            )
-        )
-        addSpaced(
-            content,
-            section(
-                "Relay Service",
-                relayToggle,
-                connectionState,
+                "Connection",
+                toggle,
+                details,
                 autostart,
                 actionRow(
+                    button("Copy agent") { copyText("TunnelDesktop work agent command", "agent.exe -relay-url ${normalizedRelayUrl()}") },
+                    button("Copy client") { copyText("TunnelDesktop home client command", "client.exe -relay-url ${normalizedRelayUrl()}") }
+                ),
+                actionRow(
                     button("Battery") { requestBatteryExemption() },
-                    button("Unrestricted") { openAppBatterySettings() }
+                    button("App settings") { openAppBatterySettings() }
                 ),
                 button("VPN persistence") { requestVpnPersistence() }
             )
         )
-        addSpaced(
-            content,
-            section("Activity Log", logScroll)
-        )
         setContentView(root)
     }
 
-    private fun generateIdentity() {
-        try {
-            val relayHost = AndroidRelayPorts.normalizeHost(relayAddr.text.toString())
-            val relayPortValue = AndroidRelayPorts.requirePort(relayPort.text.toString())
-            val relayAddress = AndroidRelayPorts.endpoint(relayHost, relayPortValue.toString())
-            val options = JSONObject()
-                .put("relay_addr", relayAddress)
-                .put("relay_hosts", jsonArray(certificateNames()))
-                .put("agent_proxy", agentProxyValue())
-                .put("raw_rdp_addr", "0.0.0.0:3389")
-                .put("raw_allowlist", jsonArray(rawAllowlist()))
-                .put("rdp_addr", "127.0.0.1:3389")
-                .put("client_listen", "127.0.0.1:3389")
-            val result = JSONObject(Relaycore.generateSetup(options.toString()))
-            prefs.edit()
-                .putString("relay_addr", relayHost)
-                .putString("relay_port", relayPortValue.toString())
-                .putString("relay_hosts", relayHosts.text.toString())
-                .putString("agent_proxy", agentProxy.text.toString().trim())
-                .putString("raw_allow", rawAllow.text.toString())
-                .putString("config", result.getString("relay_config_json"))
-                .putString("agent_bundle", result.getString("agent_bundle"))
-                .putString("client_bundle", result.getString("client_bundle"))
-                .putBoolean("autostart", true)
-                .remove("last_error")
-                .apply()
-            refreshStatus("Generated bundles")
-            Toast.makeText(this, "Bundles generated", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            val message = e.message ?: e.javaClass.simpleName
-            refreshStatus("Generate failed: $message")
-            Toast.makeText(this, "Generate failed: $message", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun shareBundle(name: String, bundle: String) {
-        if (bundle.isBlank()) {
-            refreshStatus("Generate identity first")
-            return
-        }
-        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, name)
-            putExtra(Intent.EXTRA_TEXT, bundle)
-        }, "Export $name"))
-    }
-
-    private fun toggleRelay() {
-        val relay = Relaycore.status()
-        val requestedRunning = prefs.getBoolean("running", false)
+    private fun toggleHomeAgent() {
+        val running = prefs.getBoolean("running", false)
         val lastError = prefs.getString("last_error", "") ?: ""
-        if (relay == "running" || requestedRunning && lastError.isBlank()) {
-            stopRelay()
-        } else {
-            startRelay()
-        }
+        if (running && lastError.isBlank()) stopHomeAgent() else startHomeAgent()
     }
 
-    private fun startRelay() {
+    private fun startHomeAgent() {
         try {
-            val config = prefs.getString("config", "") ?: ""
-            if (config.isBlank()) {
-                throw IllegalStateException("Generate bundles before starting the relay")
-            }
-            requireConfigMatchesSelectedPort(config)
-            AndroidRelayPorts.requireConfigListenPort(config)
+            val url = normalizedRelayUrl()
             prefs.edit()
-                .remove("last_error")
+                .putString("relay_addr", url)
                 .putBoolean("running", true)
+                .putString("home_agent_status", "connecting")
+                .remove("last_error")
                 .apply()
             val intent = Intent(this, RelayService::class.java)
-            if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-            refreshStatus("Starting relay")
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+            refreshStatus("Starting")
         } catch (e: Exception) {
             val message = e.message ?: e.javaClass.simpleName
             prefs.edit()
                 .putBoolean("running", false)
+                .putString("home_agent_status", "failed")
                 .putString("last_error", message)
                 .apply()
             refreshStatus("Start failed: $message")
-            Toast.makeText(this, "Start failed: $message", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun stopRelay() {
-        try {
-            stopService(Intent(this, RelayService::class.java))
-            prefs.edit()
-                .putBoolean("running", false)
-                .remove("last_error")
-                .apply()
-            refreshStatus("Relay stopped")
-        } catch (e: Exception) {
-            val message = e.message ?: e.javaClass.simpleName
-            refreshStatus("Stop failed: $message")
-            Toast.makeText(this, "Stop failed: $message", Toast.LENGTH_LONG).show()
-        }
+    private fun stopHomeAgent() {
+        stopService(Intent(this, RelayService::class.java))
+        prefs.edit()
+            .putBoolean("running", false)
+            .putString("home_agent_status", "stopped")
+            .remove("last_error")
+            .apply()
+        refreshStatus("Stopped")
     }
 
     private fun refreshStatus(extra: String = "") {
-        refreshPublicIpv6()
-        refreshPrivateIp()
-        val config = prefs.getString("config", "") ?: ""
-        val hasConfig = config.isNotBlank()
-        val hasAgent = !prefs.getString("agent_bundle", "").isNullOrBlank()
-        val hasClient = !prefs.getString("client_bundle", "").isNullOrBlank()
-        val selectedPort = AndroidRelayPorts.displayPort(relayPort.text.toString())
-        val configPort = configPortOrNull(config)
-        val stalePort = configPort != null && configPort != selectedPort
-        val relay = Relaycore.status()
-        var requestedRunning = prefs.getBoolean("running", false)
-        val storedLastError = prefs.getString("last_error", "") ?: ""
-        val lastError = if (relay == "running") "" else storedLastError
-        if (relay == "running" && (storedLastError.isNotBlank() || !requestedRunning)) {
-            prefs.edit()
-                .putBoolean("running", true)
-                .remove("last_error")
-                .apply()
-            requestedRunning = true
+        val url = normalizedRelayUrl()
+        val running = prefs.getBoolean("running", false)
+        val state = prefs.getString("home_agent_status", "stopped") ?: "stopped"
+        val lastError = prefs.getString("last_error", "") ?: ""
+        val model = when {
+            state == "connected" -> StatusModel("Home agent connected", success, Color.rgb(230, 246, 237))
+            running && lastError.isBlank() -> StatusModel("Home agent connecting", accent, accentSoft)
+            lastError.isNotBlank() -> StatusModel("Home agent failed", danger, Color.rgb(252, 232, 232))
+            else -> StatusModel("Home agent stopped", muted, Color.rgb(239, 242, 245))
         }
-        val statusModel = when {
-            relay == "running" -> StatusModel("Relay running", success, Color.rgb(230, 246, 237))
-            requestedRunning && lastError.isBlank() -> StatusModel("Relay starting", accent, accentSoft)
-            lastError.isNotBlank() -> StatusModel("Relay start failed", danger, Color.rgb(252, 232, 232))
-            else -> StatusModel("Relay stopped", muted, Color.rgb(239, 242, 245))
-        }
-        status.text = statusModel.text
-        status.setTextColor(statusModel.textColor)
-        status.background = rounded(statusModel.backgroundColor, Color.TRANSPARENT)
-        refreshConnectionStatus()
-        updateRelayToggle(relay, requestedRunning, lastError)
-        bundleState.text = listOf(
-            if (hasConfig) "Relay config ready" else "Relay config missing",
-            if (hasAgent) "Agent bundle ready" else "Agent bundle missing",
-            if (hasClient) "Client bundle ready" else "Client bundle missing",
-            if (stalePort) "Bundles use relay port $configPort; generate bundles to use $selectedPort" else "",
-            if (requestedRunning && relay != "running" && lastError.isBlank()) "Waiting for relay service to report running" else "",
-            if (lastError.isNotBlank()) "Last start error: $lastError" else "",
+        status.text = model.text
+        status.setTextColor(model.textColor)
+        status.background = rounded(model.backgroundColor, Color.TRANSPARENT)
+        toggle.text = if (running && lastError.isBlank()) "Stop" else "Start"
+        styleButton(toggle, primary = !running || lastError.isNotBlank(), danger = running && lastError.isBlank())
+
+        details.text = listOf(
+            "Relay URL: $url",
+            "State: $state",
+            if (lastError.isNotBlank()) "Last error: $lastError" else "",
             extra
         ).filter { it.isNotBlank() }.joinToString("\n")
+        commands.text = listOf(
+            "Work agent: agent.exe -relay-url $url",
+            "Home client: client.exe -relay-url $url"
+        ).joinToString("\n")
     }
 
-    private fun requireConfigMatchesSelectedPort(config: String) {
-        val selectedPort = AndroidRelayPorts.requirePort(relayPort.text.toString())
-        val configPort = AndroidRelayPorts.configListenPort(config)
-        if (configPort != selectedPort) {
-            throw IllegalStateException(
-                "Bundles were generated for relay port $configPort, but the relay port field is $selectedPort. Tap Generate bundles, then export the updated agent/client bundles."
-            )
+    private fun savedRelayUrl(): String =
+        (prefs.getString("relay_addr", "") ?: "").ifBlank { DEFAULT_RELAY_URL }
+
+    private fun normalizedRelayUrl(): String {
+        val value = relayUrl.text.toString().trim().ifBlank { DEFAULT_RELAY_URL }
+        val parsed = Uri.parse(value)
+        require(parsed.scheme == "https" || parsed.scheme == "http" || parsed.scheme == "wss" || parsed.scheme == "ws") {
+            "Relay URL must start with https://"
         }
+        require(!parsed.host.isNullOrBlank()) { "Relay URL must include a host" }
+        return value.trimEnd('/')
     }
 
-    private fun configPortOrNull(config: String): Int? {
-        if (config.isBlank()) return null
-        return try {
-            AndroidRelayPorts.configListenPort(config)
-        } catch (_: Exception) {
-            null
-        }
+    private fun applyDefaultUrl() {
+        relayUrl.setText(DEFAULT_RELAY_URL)
+        prefs.edit().putString("relay_addr", DEFAULT_RELAY_URL).apply()
+        refreshStatus("Default URL applied")
     }
 
-    private fun updateRelayToggle(relay: String, requestedRunning: Boolean, lastError: String) {
-        if (relay == "running" || requestedRunning && lastError.isBlank()) {
-            relayToggle.text = "Stop relay"
-            styleButton(relayToggle, danger = true)
-        } else {
-            relayToggle.text = "Start relay"
-            styleButton(relayToggle, primary = true)
-        }
-    }
-
-    private fun refreshConnectionStatus() {
-        connectionState.text = try {
-            formatConnectionStatus(JSONObject(Relaycore.connectionStatus()))
-        } catch (e: Exception) {
-            "Connections: unavailable (${e.message ?: e.javaClass.simpleName})"
-        }
-    }
-
-    private fun formatConnectionStatus(snapshot: JSONObject): String {
-        val relayState = snapshot.optString("status", "unknown")
-        val tlsListenAddr = snapshot.optString("tls_listen_addr", "")
-        val rawListenAddr = snapshot.optString("raw_rdp_listen_addr", "")
-        val activeHome = snapshot.optInt("home_active", 0)
-        val tlsHome = snapshot.optInt("home_tls_active", 0)
-        val rawHome = snapshot.optInt("home_raw_rdp_active", 0)
-        val totalHome = snapshot.optLong("home_total_connections", 0)
-        return listOf(
-            "Relay core: $relayState",
-            workAgentLine(snapshot),
-            "Home side: $activeHome active ($tlsHome secure client, $rawHome LAN RDP), $totalHome total",
-            lastHomeLine(snapshot),
-            if (tlsListenAddr.isNotBlank()) "TLS listener: $tlsListenAddr" else "",
-            if (rawListenAddr.isNotBlank()) "LAN RDP listener: $rawListenAddr" else ""
-        ).filter { it.isNotBlank() }.joinToString("\n")
-    }
-
-    private fun workAgentLine(snapshot: JSONObject): String {
-        if (snapshot.optBoolean("agent_connected", false)) {
-            val remote = snapshot.optString("agent_remote_addr", "")
-            val connectedAt = formatStatusTime(snapshot.optString("agent_connected_at", ""))
-            return listOf(
-                "Work agent: connected",
-                if (remote.isNotBlank()) "from $remote" else "",
-                if (connectedAt.isNotBlank()) "since $connectedAt" else ""
-            ).filter { it.isNotBlank() }.joinToString(" ")
-        }
-        val lastRemote = snapshot.optString("agent_last_remote_addr", "")
-        val lastSeen = formatStatusTime(snapshot.optString("agent_last_disconnected_at", ""))
-        return if (lastRemote.isNotBlank() || lastSeen.isNotBlank()) {
-            listOf(
-                "Work agent: disconnected",
-                if (lastRemote.isNotBlank()) "last from $lastRemote" else "",
-                if (lastSeen.isNotBlank()) "at $lastSeen" else ""
-            ).filter { it.isNotBlank() }.joinToString(" ")
-        } else {
-            "Work agent: not connected"
-        }
-    }
-
-    private fun lastHomeLine(snapshot: JSONObject): String {
-        val label = homeLabel(snapshot.optString("last_home_label", ""))
-        val remote = snapshot.optString("last_home_remote_addr", "")
-        val connectedAt = formatStatusTime(snapshot.optString("last_home_connected_at", ""))
-        val disconnectedAt = formatStatusTime(snapshot.optString("last_home_disconnected_at", ""))
-        if (label.isBlank() && remote.isBlank()) return ""
-        val state = if (disconnectedAt.isNotBlank()) {
-            "last ended $disconnectedAt"
-        } else if (connectedAt.isNotBlank()) {
-            "connected $connectedAt"
-        } else {
-            ""
-        }
-        return listOf(
-            "Last home side:",
-            label,
-            if (remote.isNotBlank()) "from $remote" else "",
-            state
-        ).filter { it.isNotBlank() }.joinToString(" ")
-    }
-
-    private fun homeLabel(label: String): String =
-        when (label) {
-            "tls client" -> "secure client"
-            "raw RDP" -> "LAN RDP"
-            else -> label
-        }
-
-    private fun formatStatusTime(value: String): String {
-        if (value.isBlank()) return ""
-        return value.replace("T", " ").removeSuffix("Z") + " UTC"
-    }
-
-    private fun refreshPublicIpv6() {
-        val candidates = publicIpv6Candidates()
-        val port = relayPortForDisplay()
-        publicIpv6.text = if (candidates.isEmpty()) {
-            "Public IPv6: none detected"
-        } else {
-            val primary = candidates.first()
-            val lines = mutableListOf(
-                "Public IPv6: ${primary.address} (${primary.interfaceName})",
-                "Agent relay address: [${primary.address}]:$port"
-            )
-            if (candidates.size > 1) {
-                lines.add("Other IPv6: " + candidates.drop(1).joinToString(", ") { "${it.address} (${it.interfaceName})" })
-            }
-            lines.joinToString("\n")
-        }
-    }
-
-    private fun refreshPrivateIp() {
-        val candidates = privateIpv4Candidates()
-        updateRawAllowDefault(candidates)
-        privateIp.text = if (candidates.isEmpty()) {
-            "Private IP: none detected"
-        } else {
-            val primary = candidates.first()
-            val lines = mutableListOf(
-                "Private IP: ${primary.address} (${primary.interfaceName})",
-                "Hotspot/LAN RDP address: ${primary.address}:3389"
-            )
-            if (candidates.size > 1) {
-                lines.add("Other private IP: " + candidates.drop(1).joinToString(", ") { "${it.address} (${it.interfaceName})" })
-            }
-            lines.joinToString("\n")
-        }
-    }
-
-    private fun applyPublicIpv6() {
-        val candidate = publicIpv6Candidates().firstOrNull()
-        if (candidate == null) {
-            refreshStatus("No public IPv6 detected")
-            return
-        }
-        val port = relayPortForDisplay()
-        relayAddr.setText(candidate.address)
-        relayPort.setText(port)
-        val hosts = relayHosts.text.toString()
-            .split(",")
-            .map { it.trim() }
-            .filter { it.isNotEmpty() && it != candidate.address }
-        relayHosts.setText((listOf(candidate.address) + hosts).joinToString(","))
-        prefs.edit()
-            .putString("relay_addr", relayAddr.text.toString())
-            .putString("relay_port", port)
-            .putString("relay_hosts", relayHosts.text.toString())
-            .apply()
-        refreshStatus("IPv6 applied; regenerate bundles")
-    }
-
-    private fun copyPublicIpv6() {
-        val candidate = publicIpv6Candidates().firstOrNull()
-        if (candidate == null) {
-            refreshStatus("No public IPv6 detected")
-            return
-        }
-        val relay = "[${candidate.address}]:${relayPortForDisplay()}"
+    private fun copyText(label: String, value: String) {
+        prefs.edit().putString("relay_addr", normalizedRelayUrl()).apply()
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("TunnelDesktop relay address", relay))
-        Toast.makeText(this, "Copied $relay", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun copyPrivateRdp() {
-        val candidate = privateIpv4Candidates().firstOrNull()
-        if (candidate == null) {
-            refreshStatus("No private IP detected")
-            return
-        }
-        val rdp = "${candidate.address}:3389"
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("TunnelDesktop LAN RDP address", rdp))
-        Toast.makeText(this, "Copied $rdp", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun publicIpv6Candidates(): List<PublicIpv6> {
-        return try {
-            Collections.list(NetworkInterface.getNetworkInterfaces())
-                .filter { it.isUp && !it.isLoopback }
-                .flatMap { iface ->
-                    Collections.list(iface.inetAddresses)
-                        .filterIsInstance<Inet6Address>()
-                        .mapNotNull { address ->
-                            val host = address.hostAddress?.substringBefore("%") ?: return@mapNotNull null
-                            if (isPublicIpv6(address)) PublicIpv6(iface.name, host) else null
-                        }
-                }
-                .distinctBy { it.address }
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun privateIpv4Candidates(): List<PrivateIp> {
-        return try {
-            Collections.list(NetworkInterface.getNetworkInterfaces())
-                .filter { it.isUp && !it.isLoopback }
-                .flatMap { iface ->
-                    iface.interfaceAddresses.mapNotNull { interfaceAddress ->
-                        val address = interfaceAddress.address
-                        if (address is Inet4Address) {
-                            val host = address.hostAddress ?: return@mapNotNull null
-                            if (isPrivateIpv4(address)) {
-                                PrivateIp(iface.name, host, interfaceAddress.networkPrefixLength.toInt())
-                            } else {
-                                null
-                            }
-                        } else {
-                            null
-                        }
-                    }
-                }
-                .distinctBy { it.address }
-                .sortedWith(compareBy<PrivateIp> { privateIpRank(it.interfaceName, it.address) }.thenBy { it.interfaceName }.thenBy { it.address })
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun isPublicIpv6(address: Inet6Address): Boolean {
-        if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress) return false
-        if (address.isSiteLocalAddress || address.isMulticastAddress) return false
-        val first = address.address[0].toInt() and 0xff
-        if ((first and 0xfe) == 0xfc) return false
-        return true
-    }
-
-    private fun isPrivateIpv4(address: Inet4Address): Boolean {
-        if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isMulticastAddress) return false
-        val bytes = address.address.map { it.toInt() and 0xff }
-        return bytes[0] == 10 ||
-            bytes[0] == 172 && bytes[1] in 16..31 ||
-            bytes[0] == 192 && bytes[1] == 168
-    }
-
-    private fun privateIpRank(interfaceName: String, address: String): Int {
-        val name = interfaceName.lowercase()
-        return when {
-            name.startsWith("ap") || name.contains("hotspot") || address.startsWith("192.168.43.") -> 0
-            name.startsWith("wlan") || name.startsWith("swlan") || name.startsWith("wifi") -> 1
-            name.startsWith("eth") || name.startsWith("rndis") -> 2
-            else -> 3
-        }
-    }
-
-    private fun relayPortForDisplay(): String {
-        return AndroidRelayPorts.displayPort(relayPort.text.toString()).toString()
-    }
-
-    private fun certificateNames(): List<String> {
-        return relayHosts.text.toString()
-            .split(",")
-            .map { normalizeCertificateName(it.trim()) }
-            .filter { it.isNotEmpty() }
-    }
-
-    private fun rawAllowlist(): List<String> {
-        return rawAllow.text.toString()
-            .split(",")
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-    }
-
-    private fun updateRawAllowDefault(candidates: List<PrivateIp>) {
-        val suggested = suggestedRawAllowlist(candidates) ?: return
-        rawAllow.hint = suggested
-        val current = rawAllow.text.toString().trim()
-        val shouldReplace = current.isBlank() ||
-            current == LEGACY_DEFAULT_RAW_ALLOWLIST ||
-            current == lastAutoRawAllowlist
-        lastAutoRawAllowlist = suggested
-        if (shouldReplace && current != suggested) {
-            rawAllow.setText(suggested)
-        }
-    }
-
-    private fun suggestedRawAllowlist(candidates: List<PrivateIp>): String? {
-        val candidate = candidates.firstOrNull() ?: return null
-        val prefixLength = if (candidate.prefixLength in 8..30) candidate.prefixLength else 24
-        return networkCidr(candidate.address, prefixLength)
-    }
-
-    private fun networkCidr(address: String, prefixLength: Int): String? {
-        val octets = address.split(".").map { it.toIntOrNull() ?: return null }
-        if (octets.size != 4 || octets.any { it !in 0..255 }) return null
-        val ip = octets.fold(0) { acc, octet -> acc shl 8 or octet }
-        val mask = if (prefixLength == 0) 0 else -1 shl (32 - prefixLength)
-        val network = ip and mask
-        val networkOctets = listOf(
-            network ushr 24 and 0xff,
-            network ushr 16 and 0xff,
-            network ushr 8 and 0xff,
-            network and 0xff
-        )
-        return networkOctets.joinToString(".") + "/$prefixLength"
-    }
-
-    private fun jsonArray(values: List<String>): JSONArray {
-        return JSONArray().apply {
-            values.forEach { put(it) }
-        }
-    }
-
-    private fun normalizeCertificateName(value: String): String {
-        if (value.startsWith("[")) {
-            val end = value.indexOf("]")
-            if (end > 0) return value.substring(1, end)
-        }
-        return if (value.count { it == ':' } == 1) value.substringBefore(":") else value
-    }
-
-    private fun agentProxyValue(): String {
-        val value = agentProxy.text.toString().trim()
-        return if (value.isBlank()) "direct" else value
-    }
-
-    private fun savedAgentProxy(): String {
-        val value = prefs.getString("agent_proxy", "") ?: ""
-        return if (value == "http://PROXY:PORT") "" else value
-    }
-
-    private fun savedRelayHost(): String {
-        val value = prefs.getString("relay_addr", "") ?: ""
-        return AndroidRelayPorts.normalizeHost(value)
-    }
-
-    private fun savedRelayPort(): String {
-        return prefs.getString("relay_port", AndroidRelayPorts.DEFAULT_PORT.toString()) ?: AndroidRelayPorts.DEFAULT_PORT.toString()
-    }
-
-    private fun savedRawAllowlist(defaultRawAllowlist: String?): String {
-        val value = prefs.getString("raw_allow", null)?.trim().orEmpty()
-        if (value.isBlank() || value == LEGACY_DEFAULT_RAW_ALLOWLIST) {
-            return defaultRawAllowlist.orEmpty()
-        }
-        return value
-    }
-
-    private data class PublicIpv6(val interfaceName: String, val address: String)
-    private data class PrivateIp(val interfaceName: String, val address: String, val prefixLength: Int)
-    private data class StatusModel(val text: String, val textColor: Int, val backgroundColor: Int)
-
-    private fun recentLogText(): String {
-        return try {
-            val values = JSONArray(Relaycore.recentLogs())
-            (0 until values.length()).joinToString("\n") { values.getString(it) }
-        } catch (_: Exception) {
-            ""
-        }
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+        Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
     }
 
     private fun title(text: String): TextView =
@@ -792,9 +275,9 @@ class MainActivity : AppCompatActivity() {
             addSpaced(this, input, 4)
         }
 
-    private fun edit(hintText: String, value: String): EditText =
+    private fun edit(value: String): EditText =
         EditText(this).apply {
-            hint = hintText
+            hint = DEFAULT_RELAY_URL
             setText(value)
             setSingleLine(true)
             textSize = 14f
@@ -803,6 +286,22 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), 0, dp(12), 0)
             minHeight = dp(46)
             background = rounded(Color.WHITE, line)
+        }
+
+    private fun statusLabel(): TextView =
+        TextView(this).apply {
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+
+    private fun infoBox(): TextView =
+        TextView(this).apply {
+            textSize = 13f
+            setTextColor(ink)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(Color.rgb(245, 247, 250), Color.TRANSPARENT)
+            setTextIsSelectable(true)
         }
 
     private fun actionRow(vararg buttons: Button): LinearLayout =
@@ -850,9 +349,7 @@ class MainActivity : AppCompatActivity() {
         GradientDrawable().apply {
             setColor(fill)
             cornerRadius = dp(radius).toFloat()
-            if (stroke != Color.TRANSPARENT) {
-                setStroke(dp(1), stroke)
-            }
+            if (stroke != Color.TRANSPARENT) setStroke(dp(1), stroke)
         }
 
     private fun dp(value: Int): Int =
@@ -881,13 +378,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestVpnPersistence() {
         val prepare = VpnService.prepare(this)
-        if (prepare != null) {
-            startActivityForResult(prepare, 42)
-        } else {
-            startService(Intent(this, PersistenceVpnService::class.java))
-        }
+        if (prepare != null) startActivityForResult(prepare, 42) else startService(Intent(this, PersistenceVpnService::class.java))
     }
 
     private fun deviceProtectedStorageContext() =
         if (Build.VERSION.SDK_INT >= 24) createDeviceProtectedStorageContext() else this
+
+    private data class StatusModel(val text: String, val textColor: Int, val backgroundColor: Int)
 }

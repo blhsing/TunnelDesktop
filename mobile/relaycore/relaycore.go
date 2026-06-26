@@ -33,7 +33,3 @@ func SetLogCallback(callback LogCallback) {
 func RecentLogs() string {
 	return core.RecentLogs()
 }
-
-func GenerateSetup(configJSON string) (string, error) {
-	return core.GenerateSetup(configJSON)
-}

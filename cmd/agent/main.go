@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,13 +25,14 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"tunneldesktop/internal/relaycore"
 	"tunneldesktop/internal/tunnel"
 )
 
 const serviceName = "TunnelDesktopAgent"
+const defaultRelayURL = "https://test-officialwebsite.azurewebsites.net/relay/"
 
 type config struct {
+	RelayMode  string `json:"relay_mode"`
 	RelayAddr  string `json:"relay_addr"`
 	Proxy      string `json:"proxy"`
 	CAFile     string `json:"ca_file"`
@@ -48,16 +50,20 @@ type config struct {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	var bundleFile string
 	var configFile string
+	var relayURL string
+	var proxyFlag string
+	var rdpFlag string
 	var consoleMode bool
 	var serviceMode bool
 	var installMode bool
 	var uninstallMode bool
 	var statusMode bool
 	var selfTestMode bool
-	flag.StringVar(&bundleFile, "bundle", "", "agent.tnl bundle file")
 	flag.StringVar(&configFile, "config", "", "legacy JSON config file")
+	flag.StringVar(&relayURL, "relay-url", "", "Azure relay service URL")
+	flag.StringVar(&proxyFlag, "proxy", "", "HTTP proxy for Azure relay WebSocket, or direct/env/auto")
+	flag.StringVar(&rdpFlag, "rdp", "", "local RDP target")
 	flag.BoolVar(&consoleMode, "console", false, "run in the foreground for debugging")
 	flag.BoolVar(&serviceMode, "service", false, "run under the Windows service control manager")
 	flag.BoolVar(&installMode, "install", false, "install and start the Windows service")
@@ -66,8 +72,8 @@ func main() {
 	flag.BoolVar(&selfTestMode, "self-test", false, "test local RDP, proxy CONNECT, TLS, and token auth")
 	flag.Parse()
 
-	if bundleFile == "" && configFile == "" {
-		bundleFile = defaultBundlePath("agent.tnl")
+	if configFile == "" && relayURL == "" {
+		relayURL = defaultRelayURL
 	}
 	runningAsService := serviceMode
 	if !runningAsService {
@@ -78,7 +84,7 @@ func main() {
 		}
 	}
 	if runningAsService {
-		if err := runService(bundleFile, configFile); err != nil {
+		if err := runService(configFile, relayURL, proxyFlag, rdpFlag); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -96,7 +102,7 @@ func main() {
 		return
 	}
 	if selfTestMode {
-		cfg, err := loadConfig(bundleFile, configFile)
+		cfg, err := loadConfig(configFile, relayURL, proxyFlag, rdpFlag)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -107,13 +113,13 @@ func main() {
 		return
 	}
 	if installMode || !consoleMode {
-		if err := installService(bundleFile, configFile); err != nil {
+		if err := installService(configFile, relayURL, proxyFlag, rdpFlag); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
 
-	cfg, err := loadConfig(bundleFile, configFile)
+	cfg, err := loadConfig(configFile, relayURL, proxyFlag, rdpFlag)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -124,30 +130,13 @@ func main() {
 	}
 }
 
-func loadConfig(bundleFile, configFile string) (config, error) {
-	if bundleFile != "" {
-		data, err := os.ReadFile(bundleFile)
-		if err != nil {
-			return config{}, fmt.Errorf("read bundle: %w", err)
-		}
-		bundle, err := relaycore.DecodeBundle(string(data))
-		if err != nil {
-			return config{}, err
-		}
-		if bundle.Role != "agent" {
-			return config{}, fmt.Errorf("bundle role is %q, want agent", bundle.Role)
-		}
+func loadConfig(configFile, relayURL, proxyOverride, rdpOverride string) (config, error) {
+	if strings.TrimSpace(relayURL) != "" {
 		cfg := config{
-			RelayAddr:  bundle.RelayAddr,
-			Proxy:      bundle.Proxy,
-			CAPEM:      bundle.CAPEM,
-			CertPEM:    bundle.CertPEM,
-			KeyPEM:     bundle.KeyPEM,
-			ServerName: bundle.ServerName,
-			Token:      bundle.Token,
-			RDPAddr:    bundle.RDPAddr,
-			MinBackoff: bundle.MinBackoff,
-			MaxBackoff: bundle.MaxBackoff,
+			RelayMode: "websocket",
+			RelayAddr: strings.TrimSpace(relayURL),
+			Proxy:     strings.TrimSpace(proxyOverride),
+			RDPAddr:   strings.TrimSpace(rdpOverride),
 		}
 		cfg.applyDefaults()
 		return cfg, cfg.validate()
@@ -166,8 +155,18 @@ func loadConfig(bundleFile, configFile string) (config, error) {
 }
 
 func (c *config) applyDefaults() {
+	if c.RelayMode == "" {
+		if tunnel.IsWebSocketRelay(c.RelayAddr) {
+			c.RelayMode = "websocket"
+		} else {
+			c.RelayMode = "tls"
+		}
+	}
 	if c.RDPAddr == "" {
 		c.RDPAddr = "127.0.0.1:3389"
+	}
+	if c.RelayMode == "websocket" && c.RelayAddr == "" {
+		c.RelayAddr = defaultRelayURL
 	}
 	if c.MinBackoff == "" {
 		c.MinBackoff = "1s"
@@ -176,7 +175,7 @@ func (c *config) applyDefaults() {
 		c.MaxBackoff = "60s"
 	}
 	if c.ServerName == "" && c.RelayAddr != "" {
-		c.ServerName = serverNameFromAddr(c.RelayAddr)
+		c.ServerName = tunnel.HostFromRelayAddress(c.RelayAddr)
 	}
 }
 
@@ -184,19 +183,22 @@ func (c config) validate() error {
 	if c.RelayAddr == "" {
 		return fmt.Errorf("relay_addr is required")
 	}
-	if c.CAFile == "" && c.CAPEM == "" {
+	if c.RelayMode != "tls" && c.RelayMode != "websocket" {
+		return fmt.Errorf("unsupported relay_mode %q", c.RelayMode)
+	}
+	if c.RelayMode == "tls" && c.CAFile == "" && c.CAPEM == "" {
 		return fmt.Errorf("ca_file or ca_pem is required")
 	}
-	if c.CertFile == "" && c.CertPEM == "" {
+	if c.RelayMode == "tls" && c.CertFile == "" && c.CertPEM == "" {
 		return fmt.Errorf("cert_file or cert_pem is required")
 	}
-	if c.KeyFile == "" && c.KeyPEM == "" {
+	if c.RelayMode == "tls" && c.KeyFile == "" && c.KeyPEM == "" {
 		return fmt.Errorf("key_file or key_pem is required")
 	}
-	if c.ServerName == "" {
+	if c.RelayMode == "tls" && c.ServerName == "" {
 		return fmt.Errorf("server_name is required")
 	}
-	if c.Token == "" {
+	if c.RelayMode == "tls" && c.Token == "" {
 		return fmt.Errorf("token is required")
 	}
 	minBackoff, err := time.ParseDuration(c.MinBackoff)
@@ -216,22 +218,17 @@ func (c *config) resolvePaths(base string) {
 	c.KeyFile = resolvePath(base, c.KeyFile)
 }
 
-func installService(bundleFile, configFile string) error {
-	if bundleFile == "" && configFile == "" {
-		return fmt.Errorf("agent.tnl was not found next to agent.exe; pass -bundle or place agent.tnl beside the executable")
-	}
-	if bundleFile != "" {
-		if _, err := os.Stat(bundleFile); err != nil {
-			return fmt.Errorf("agent bundle %q is not readable: %w", bundleFile, err)
-		}
-	}
+func installService(configFile, relayURL, proxyFlag, rdpFlag string) error {
 	if configFile != "" {
 		if _, err := os.Stat(configFile); err != nil {
 			return fmt.Errorf("agent config %q is not readable: %w", configFile, err)
 		}
 	}
+	if configFile == "" && strings.TrimSpace(relayURL) == "" {
+		relayURL = defaultRelayURL
+	}
 	if !isElevated() {
-		return relaunchElevated(bundleFile, configFile)
+		return relaunchElevated(configFile, relayURL, proxyFlag, rdpFlag)
 	}
 	exePath, err := os.Executable()
 	if err != nil {
@@ -243,7 +240,7 @@ func installService(bundleFile, configFile string) error {
 	}
 	defer m.Disconnect()
 
-	args := serviceArgs(bundleFile, configFile)
+	args := serviceArgs(configFile, relayURL, proxyFlag, rdpFlag)
 	serviceConfig := serviceInstallConfig(exePath, args)
 	s, err := m.CreateService(serviceName, exePath, serviceConfig, args...)
 	if err != nil {
@@ -257,7 +254,7 @@ func installService(bundleFile, configFile string) error {
 				return fmt.Errorf("update existing service: %w", err)
 			}
 		} else if isAccessDenied(err) {
-			return installScheduledTask(bundleFile, configFile)
+			return installScheduledTask(configFile, relayURL, proxyFlag, rdpFlag)
 		} else {
 			return fmt.Errorf("create service: %w", err)
 		}
@@ -271,13 +268,19 @@ func installService(bundleFile, configFile string) error {
 	return nil
 }
 
-func serviceArgs(bundleFile, configFile string) []string {
+func serviceArgs(configFile, relayURL, proxyFlag, rdpFlag string) []string {
 	args := []string{"-service"}
-	if bundleFile != "" {
-		args = append(args, "-bundle", bundleFile)
-	}
 	if configFile != "" {
 		args = append(args, "-config", configFile)
+	}
+	if relayURL != "" {
+		args = append(args, "-relay-url", relayURL)
+	}
+	if proxyFlag != "" {
+		args = append(args, "-proxy", proxyFlag)
+	}
+	if rdpFlag != "" {
+		args = append(args, "-rdp", rdpFlag)
 	}
 	return args
 }
@@ -341,19 +344,21 @@ func printStatus() error {
 	return nil
 }
 
-func runService(bundleFile, configFile string) error {
-	return svc.Run(serviceName, &agentService{bundleFile: bundleFile, configFile: configFile})
+func runService(configFile, relayURL, proxyFlag, rdpFlag string) error {
+	return svc.Run(serviceName, &agentService{configFile: configFile, relayURL: relayURL, proxyFlag: proxyFlag, rdpFlag: rdpFlag})
 }
 
 type agentService struct {
-	bundleFile string
 	configFile string
+	relayURL   string
+	proxyFlag  string
+	rdpFlag    string
 }
 
 func (s *agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	const accepts = svc.AcceptStop | svc.AcceptShutdown
 	changes <- svc.Status{State: svc.StartPending}
-	cfg, err := loadConfig(s.bundleFile, s.configFile)
+	cfg, err := loadConfig(s.configFile, s.relayURL, s.proxyFlag, s.rdpFlag)
 	if err != nil {
 		logEvent(eventlog.Error, "load config failed: %v", err)
 		return false, 1
@@ -388,6 +393,9 @@ func (s *agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, ch
 }
 
 func run(ctx context.Context, cfg config) error {
+	if cfg.RelayMode == "websocket" || tunnel.IsWebSocketRelay(cfg.RelayAddr) {
+		return runWebSocketPool(ctx, cfg)
+	}
 	minBackoff, _ := time.ParseDuration(cfg.MinBackoff)
 	maxBackoff, _ := time.ParseDuration(cfg.MaxBackoff)
 	backoff := minBackoff
@@ -409,6 +417,62 @@ func run(ctx context.Context, cfg config) error {
 			backoff = maxBackoff
 		}
 	}
+	return nil
+}
+
+func runWebSocketPool(ctx context.Context, cfg config) error {
+	const slots = 4
+	var wg sync.WaitGroup
+	for i := 0; i < slots; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			runWebSocketSlot(ctx, cfg, slot)
+		}(i + 1)
+	}
+	<-ctx.Done()
+	wg.Wait()
+	return nil
+}
+
+func runWebSocketSlot(ctx context.Context, cfg config, slot int) {
+	minBackoff, _ := time.ParseDuration(cfg.MinBackoff)
+	maxBackoff, _ := time.ParseDuration(cfg.MaxBackoff)
+	backoff := minBackoff
+	for ctx.Err() == nil {
+		err := runWebSocketOnce(ctx, cfg, slot)
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("websocket agent slot %d disconnected: %v; reconnecting in %s", slot, err, backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+func runWebSocketOnce(ctx context.Context, cfg config, slot int) error {
+	ws, err := tunnel.DialWebSocket(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleAgent, cfg.Token)
+	if err != nil {
+		return err
+	}
+	defer tunnel.CloseWebSocket(ws)
+
+	log.Printf("websocket agent slot %d connected to relay %s via %s", slot, cfg.RelayAddr, tunnel.ProxySpecForLog(cfg.Proxy))
+	if err := tunnel.AwaitWebSocketStart(ctx, ws); err != nil {
+		return err
+	}
+	log.Printf("websocket agent slot %d paired; forwarding to %s", slot, cfg.RDPAddr)
+	stream := tunnel.WebSocketNetConn(ctx, ws)
+	handleStream(ctx, stream, cfg.RDPAddr)
 	return nil
 }
 
@@ -466,11 +530,19 @@ func selfTest(parent context.Context, cfg config) error {
 		return fmt.Errorf("local RDP target %s is not reachable: %w", cfg.RDPAddr, err)
 	}
 	_ = rdpConn.Close()
+	log.Printf("self-test relay target: %s via %s", cfg.RelayAddr, tunnel.ProxySpecForLog(cfg.Proxy))
+	if cfg.RelayMode == "websocket" || tunnel.IsWebSocketRelay(cfg.RelayAddr) {
+		ws, err := tunnel.DialWebSocket(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleProbe, cfg.Token)
+		if err != nil {
+			return fmt.Errorf("websocket relay connection test failed: %w. %s", err, relayDialHint(err, cfg))
+		}
+		tunnel.CloseWebSocket(ws)
+		return nil
+	}
 	tlsConfig, err := cfg.tlsConfig()
 	if err != nil {
 		return err
 	}
-	log.Printf("self-test relay target: %s via %s", cfg.RelayAddr, tunnel.ProxySpecForLog(cfg.Proxy))
 	rawConn, err := tunnel.DialContext(ctx, cfg.RelayAddr, cfg.Proxy)
 	if err != nil {
 		return fmt.Errorf("relay connection test failed: %w. %s", err, relayDialHint(err, cfg))
@@ -491,7 +563,7 @@ func relayDialHint(err error, cfg config) string {
 	errText := strings.ToLower(err.Error())
 	if strings.Contains(errText, "proxy connect") {
 		return fmt.Sprintf(
-			"The proxy returned an HTTP error before TLS started. Confirm that the proxy allows CONNECT to %s, that it can reach the relay host or IPv6 address, and that port %s is permitted. If the work network allows direct outbound connections, regenerate the agent bundle with Work agent HTTP proxy left blank.",
+			"The proxy returned an HTTP error before TLS started. Confirm that the proxy allows CONNECT to %s, that it can reach the relay host, and that port %s is permitted. If the work network allows direct outbound connections, rerun the agent without -proxy.",
 			cfg.RelayAddr,
 			relayPortForHint(cfg.RelayAddr),
 		)
@@ -530,17 +602,23 @@ func (c config) tlsConfig() (*tls.Config, error) {
 	return tunnel.ClientTLSConfig(c.CAFile, c.CertFile, c.KeyFile, c.ServerName)
 }
 
-func installScheduledTask(bundleFile, configFile string) error {
+func installScheduledTask(configFile, relayURL, proxyFlag, rdpFlag string) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	args := []string{strconv.Quote(exePath), "-console"}
-	if bundleFile != "" {
-		args = append(args, "-bundle", strconv.Quote(bundleFile))
-	}
 	if configFile != "" {
 		args = append(args, "-config", strconv.Quote(configFile))
+	}
+	if relayURL != "" {
+		args = append(args, "-relay-url", strconv.Quote(relayURL))
+	}
+	if proxyFlag != "" {
+		args = append(args, "-proxy", strconv.Quote(proxyFlag))
+	}
+	if rdpFlag != "" {
+		args = append(args, "-rdp", strconv.Quote(rdpFlag))
 	}
 	out, err := exec.Command("schtasks", "/Create", "/TN", "TunnelDesktop Agent", "/SC", "ONLOGON", "/TR", strings.Join(args, " "), "/F").CombinedOutput()
 	if err != nil {
@@ -550,24 +628,30 @@ func installScheduledTask(bundleFile, configFile string) error {
 	return nil
 }
 
-func relaunchElevated(bundleFile, configFile string) error {
+func relaunchElevated(configFile, relayURL, proxyFlag, rdpFlag string) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	args := []string{"-install"}
-	if bundleFile != "" {
-		args = append(args, "-bundle", bundleFile)
-	}
 	if configFile != "" {
 		args = append(args, "-config", configFile)
+	}
+	if relayURL != "" {
+		args = append(args, "-relay-url", relayURL)
+	}
+	if proxyFlag != "" {
+		args = append(args, "-proxy", proxyFlag)
+	}
+	if rdpFlag != "" {
+		args = append(args, "-rdp", rdpFlag)
 	}
 	verb, _ := windows.UTF16PtrFromString("runas")
 	exe, _ := windows.UTF16PtrFromString(exePath)
 	params, _ := windows.UTF16PtrFromString(joinWindowsArgs(args))
 	if err := windows.ShellExecute(0, verb, exe, params, nil, windows.SW_NORMAL); err != nil {
 		if isAccessDenied(err) {
-			return installScheduledTask(bundleFile, configFile)
+			return installScheduledTask(configFile, relayURL, proxyFlag, rdpFlag)
 		}
 		return err
 	}
@@ -586,14 +670,6 @@ func isElevated() bool {
 
 func isAccessDenied(err error) bool {
 	return err == windows.ERROR_ACCESS_DENIED || strings.Contains(strings.ToLower(err.Error()), "access is denied")
-}
-
-func defaultBundlePath(name string) string {
-	exePath, err := os.Executable()
-	if err != nil {
-		return name
-	}
-	return filepath.Join(filepath.Dir(exePath), name)
 }
 
 func resolvePath(base, value string) string {

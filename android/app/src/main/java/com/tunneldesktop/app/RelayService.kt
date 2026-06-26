@@ -6,104 +6,136 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.SharedPreferences
-import android.net.wifi.WifiManager
+import android.net.Uri
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
-import android.os.PowerManager
+import android.os.Looper
 import androidx.core.app.NotificationCompat
-import relaycore.Relaycore
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import java.util.concurrent.TimeUnit
 
 class RelayService : Service() {
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var client: OkHttpClient? = null
+    private var webSocket: WebSocket? = null
+    private var stopping = false
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        startForeground(1001, notification("Running"))
+        startForeground(1001, notification("Connecting"))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return try {
-            if (Relaycore.status() == "running") {
-                prefs().edit()
-                    .putBoolean("running", true)
-                    .remove("last_error")
-                    .apply()
-                updateNotification("Running")
-                WatchdogReceiver.schedule(this)
-                return START_STICKY
-            }
-            val config = prefs().getString("config", "") ?: ""
-            if (config.isBlank()) {
-                throw IllegalStateException("Generate bundles before starting the relay")
-            }
-            AndroidRelayPorts.requireConfigListenPort(config)
-            acquireLocks()
-            Relaycore.configure(config)
-            Relaycore.start()
-            prefs().edit()
-                .putBoolean("running", true)
-                .remove("last_error")
-                .apply()
-            updateNotification("Running")
-            WatchdogReceiver.schedule(this)
-            START_STICKY
-        } catch (e: Exception) {
-            val message = e.message ?: e.javaClass.simpleName
-            if (Relaycore.status() == "running" || message == "relay is running") {
-                prefs().edit()
-                    .putBoolean("running", true)
-                    .remove("last_error")
-                    .apply()
-                updateNotification("Running")
-                WatchdogReceiver.schedule(this)
-                return START_STICKY
-            }
-            prefs().edit()
-                .putBoolean("running", false)
-                .putString("last_error", message)
-                .apply()
-            updateNotification("Start failed")
-            releaseLocks()
-            stopSelf(startId)
-            START_NOT_STICKY
-        }
+        stopping = false
+        connect()
+        WatchdogReceiver.schedule(this)
+        return START_STICKY
     }
 
     override fun onDestroy() {
-        try {
-            Relaycore.stop()
-        } catch (_: Exception) {
-        }
-        releaseLocks()
+        stopping = true
+        webSocket?.close(1000, "stopped")
+        webSocket = null
+        client?.dispatcher?.executorService?.shutdown()
+        client = null
+        prefs().edit()
+            .putBoolean("running", false)
+            .putString("home_agent_status", "stopped")
+            .apply()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun acquireLocks() {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        if (wakeLock == null) {
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TunnelDesktop:Relay").apply {
-                setReferenceCounted(false)
-                acquire()
+    private fun connect() {
+        try {
+            val relayUrl = prefs().getString("relay_addr", "") ?: ""
+            if (relayUrl.isBlank()) {
+                throw IllegalStateException("Enter the relay URL before starting the home agent")
             }
-        }
-        val wifi = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-        if (wifiLock == null) {
-            wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "TunnelDesktop:Wifi").apply {
-                setReferenceCounted(false)
-                acquire()
-            }
+            prefs().edit()
+                .putBoolean("running", true)
+                .putString("home_agent_status", "connecting")
+                .remove("last_error")
+                .apply()
+            updateNotification("Connecting")
+
+            val httpClient = OkHttpClient.Builder()
+                .pingInterval(20, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .build()
+            client = httpClient
+            val request = Request.Builder()
+                .url(webSocketUrl(relayUrl))
+                .header("X-TunnelDesktop-Role", "home-agent")
+                .build()
+            webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    prefs().edit()
+                        .putBoolean("running", true)
+                        .putString("home_agent_status", "connected")
+                        .putString("home_agent_remote", relayUrl)
+                        .remove("last_error")
+                        .apply()
+                    updateNotification("Connected")
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    markDisconnected("closed: $code $reason")
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    val status = response?.code?.let { "HTTP $it: " }.orEmpty()
+                    markDisconnected(status + (t.message ?: t.javaClass.simpleName))
+                }
+            })
+        } catch (e: Exception) {
+            failStart(e.message ?: e.javaClass.simpleName)
         }
     }
 
-    private fun releaseLocks() {
-        wakeLock?.release()
-        wakeLock = null
-        wifiLock?.release()
-        wifiLock = null
+    private fun markDisconnected(message: String) {
+        if (stopping) return
+        prefs().edit()
+            .putString("home_agent_status", "reconnecting")
+            .putString("last_error", message)
+            .apply()
+        updateNotification("Reconnecting")
+        handler.postDelayed({ if (!stopping) connect() }, 5000)
+    }
+
+    private fun failStart(message: String) {
+        prefs().edit()
+            .putBoolean("running", false)
+            .putString("home_agent_status", "failed")
+            .putString("last_error", message)
+            .apply()
+        updateNotification("Start failed")
+        stopSelf()
+    }
+
+    private fun webSocketUrl(relayUrl: String): String {
+        val uri = Uri.parse(relayUrl.trim())
+        val scheme = when (uri.scheme?.lowercase()) {
+            "https" -> "wss"
+            "http" -> "ws"
+            "wss", "ws" -> uri.scheme!!.lowercase()
+            else -> throw IllegalArgumentException("Relay URL must start with https://")
+        }
+        val basePath = uri.path.orEmpty().trimEnd('/')
+        val wsPath = if (basePath.endsWith("/ws")) basePath else "$basePath/ws"
+        return uri.buildUpon()
+            .scheme(scheme)
+            .encodedPath(wsPath.ifBlank { "/relay/ws" })
+            .clearQuery()
+            .build()
+            .toString()
     }
 
     private fun createChannel() {

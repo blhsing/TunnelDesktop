@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,22 +23,20 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
-
-	"tunneldesktop/internal/relaycore"
 )
 
 const (
 	serviceName        = "TunnelDesktopAgent"
 	serviceDisplayName = "TunnelDesktop Agent"
 	installedAgentName = "agent.exe"
-	installedBundle    = "agent.tnl"
+	defaultRelayURL    = "https://test-officialwebsite.azurewebsites.net/relay/"
 )
 
 type app struct {
 	mw         *walk.MainWindow
 	installDir *walk.LineEdit
 	agentPath  *walk.LineEdit
-	bundlePath *walk.LineEdit
+	relayURL   *walk.LineEdit
 	status     *walk.Label
 	log        *walk.TextEdit
 }
@@ -47,7 +44,7 @@ type app struct {
 type actionOptions struct {
 	InstallDir string
 	AgentPath  string
-	BundlePath string
+	RelayURL   string
 }
 
 type serviceInfo struct {
@@ -76,7 +73,6 @@ func main() {
 func (a *app) run(smokeTest bool) error {
 	installDir := defaultInstallDir()
 	agentPath := defaultAgentPath()
-	bundlePath := defaultBundlePath(installDir)
 
 	window := MainWindow{
 		AssignTo: &a.mw,
@@ -98,9 +94,8 @@ func (a *app) run(smokeTest bool) error {
 					LineEdit{AssignTo: &a.agentPath, Text: agentPath, ColumnSpan: 1},
 					PushButton{Text: "Browse", OnClicked: a.browseAgentPath},
 
-					Label{Text: "Agent bundle"},
-					LineEdit{AssignTo: &a.bundlePath, Text: bundlePath, ColumnSpan: 1},
-					PushButton{Text: "Browse", OnClicked: a.browseBundlePath},
+					Label{Text: "Relay URL"},
+					LineEdit{AssignTo: &a.relayURL, Text: defaultRelayURL, ColumnSpan: 2},
 				},
 			},
 			GroupBox{
@@ -171,18 +166,6 @@ func (a *app) browseAgentPath() {
 	}
 }
 
-func (a *app) browseBundlePath() {
-	dlg := new(walk.FileDialog)
-	dlg.Title = "Select agent.tnl"
-	dlg.FilePath = a.bundlePath.Text()
-	dlg.Filter = "TunnelDesktop bundles (*.tnl)|*.tnl|All files (*.*)|*.*"
-	if ok, err := dlg.ShowOpen(a.mw); err != nil {
-		a.showError(err)
-	} else if ok {
-		a.bundlePath.SetText(dlg.FilePath)
-	}
-}
-
 func (a *app) runAction(action string) {
 	opts := a.options()
 	if action == "install" {
@@ -212,36 +195,24 @@ func (a *app) runAction(action string) {
 
 func (a *app) runSelfTest() {
 	opts := a.options()
-	installedExePath, installedBundlePath := installedPaths(opts.InstallDir)
+	installedExePath := installedPath(opts.InstallDir)
 	exePath := installedExePath
-	bundlePath := installedBundlePath
 	usingInstalledExe := fileExists(installedExePath)
-	usingInstalledBundle := fileExists(installedBundlePath)
 	if !usingInstalledExe {
 		exePath = opts.AgentPath
 	}
-	if !usingInstalledBundle {
-		bundlePath = opts.BundlePath
-	}
-	if exePath == "" || bundlePath == "" {
-		a.showError(errors.New("select an agent executable and agent bundle first"))
+	if exePath == "" || opts.RelayURL == "" {
+		a.showError(errors.New("select an agent executable and enter a relay URL"))
 		return
 	}
 	go func() {
-		a.appendLog("Running self-test with bundle: %s", bundlePath)
+		a.appendLog("Running self-test with relay URL: %s", opts.RelayURL)
 		a.appendLog("Agent executable: %s", exePath)
 		if usingInstalledExe && !sameFileOrContent(installedExePath, opts.AgentPath) {
 			a.appendLog("Installed agent.exe differs from the selected agent executable. Click Install / Update to copy the selected executable before testing it.")
 		}
-		if usingInstalledBundle && !sameFileOrContent(installedBundlePath, opts.BundlePath) {
-			a.appendLog("Installed agent.tnl differs from the selected bundle. Click Install / Update to copy the selected bundle before testing it.")
-		}
-		if summary, err := bundleSummaryForLog(bundlePath); err != nil {
-			a.appendLog("Bundle summary unavailable: %v", err)
-		} else {
-			a.appendLog("%s", summary)
-		}
-		cmd := exec.Command(exePath, "-self-test", "-bundle", bundlePath)
+		args := []string{"-self-test", "-relay-url", opts.RelayURL}
+		cmd := exec.Command(exePath, args...)
 		var output bytes.Buffer
 		cmd.Stdout = &output
 		cmd.Stderr = &output
@@ -349,7 +320,7 @@ func (a *app) options() actionOptions {
 	return actionOptions{
 		InstallDir: strings.TrimSpace(a.installDir.Text()),
 		AgentPath:  strings.TrimSpace(a.agentPath.Text()),
-		BundlePath: strings.TrimSpace(a.bundlePath.Text()),
+		RelayURL:   strings.TrimSpace(a.relayURL.Text()),
 	}
 }
 
@@ -389,7 +360,7 @@ func runElevatedAction(args []string) {
 	action := fs.String("elevated-action", "", "service action")
 	installDir := fs.String("install-dir", "", "install directory")
 	agentPath := fs.String("agent", "", "agent executable")
-	bundlePath := fs.String("bundle", "", "agent bundle")
+	relayURL := fs.String("relay-url", "", "relay URL")
 	if err := fs.Parse(args); err != nil {
 		windowsMessageBox(appTitle(), err.Error(), windows.MB_OK|windows.MB_ICONERROR)
 		os.Exit(2)
@@ -397,7 +368,7 @@ func runElevatedAction(args []string) {
 	message, err := performAction(*action, actionOptions{
 		InstallDir: *installDir,
 		AgentPath:  *agentPath,
-		BundlePath: *bundlePath,
+		RelayURL:   *relayURL,
 	})
 	if err != nil {
 		windowsMessageBox(appTitle(), err.Error(), windows.MB_OK|windows.MB_ICONERROR)
@@ -434,7 +405,7 @@ func installOrUpdate(opts actionOptions) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	agentDest, bundleDest := installedPaths(installDir)
+	agentDest := installedPath(installDir)
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		return "", fmt.Errorf("create install directory: %w", err)
 	}
@@ -460,11 +431,8 @@ func installOrUpdate(opts actionOptions) (string, error) {
 	if err := copyFile(opts.AgentPath, agentDest); err != nil {
 		return "", fmt.Errorf("copy agent executable: %w", err)
 	}
-	if err := copyFile(opts.BundlePath, bundleDest); err != nil {
-		return "", fmt.Errorf("copy agent bundle: %w", err)
-	}
+	args := []string{"-service", "-relay-url", opts.RelayURL}
 
-	args := []string{"-service", "-bundle", bundleDest}
 	config := serviceConfig(agentDest, args)
 	s, err := m.CreateService(serviceName, agentDest, config, args...)
 	if err != nil {
@@ -563,61 +531,13 @@ func validateInstallInputs(opts actionOptions) error {
 	if opts.AgentPath == "" {
 		return errors.New("agent executable is required")
 	}
-	if opts.BundlePath == "" {
-		return errors.New("agent bundle is required")
+	if opts.RelayURL == "" {
+		return errors.New("relay URL is required")
 	}
 	if _, err := os.Stat(opts.AgentPath); err != nil {
 		return fmt.Errorf("agent executable is not readable: %w", err)
 	}
-	data, err := os.ReadFile(opts.BundlePath)
-	if err != nil {
-		return fmt.Errorf("agent bundle is not readable: %w", err)
-	}
-	bundle, err := relaycore.DecodeBundle(string(data))
-	if err != nil {
-		return err
-	}
-	if bundle.Role != "agent" {
-		return fmt.Errorf("bundle role is %q, want agent", bundle.Role)
-	}
 	return nil
-}
-
-func bundleSummaryForLog(bundlePath string) (string, error) {
-	data, err := os.ReadFile(bundlePath)
-	if err != nil {
-		return "", err
-	}
-	bundle, err := relaycore.DecodeBundle(string(data))
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf(
-		"Bundle: role=%s relay=%s proxy=%s server_name=%s created=%s",
-		bundle.Role,
-		bundle.RelayAddr,
-		proxySpecForLog(bundle.Proxy),
-		bundle.ServerName,
-		bundle.CreatedAt.Format(time.RFC3339),
-	), nil
-}
-
-func proxySpecForLog(proxySpec string) string {
-	spec := strings.TrimSpace(proxySpec)
-	if spec == "" || strings.EqualFold(spec, "direct") {
-		return "direct"
-	}
-	if strings.EqualFold(spec, "env") || strings.EqualFold(spec, "auto") {
-		return spec
-	}
-	if !strings.Contains(spec, "://") {
-		spec = "http://" + spec
-	}
-	proxyURL, err := url.Parse(spec)
-	if err != nil || proxyURL.Host == "" {
-		return proxySpec
-	}
-	return proxyURL.Scheme + "://" + proxyURL.Host
 }
 
 func serviceConfig(exePath string, args []string) mgr.Config {
@@ -730,8 +650,8 @@ func relaunchElevatedAction(action string, opts actionOptions) error {
 	if opts.AgentPath != "" {
 		args = append(args, "-agent", opts.AgentPath)
 	}
-	if opts.BundlePath != "" {
-		args = append(args, "-bundle", opts.BundlePath)
+	if opts.RelayURL != "" {
+		args = append(args, "-relay-url", opts.RelayURL)
 	}
 	return shellExecute("runas", exePath, joinWindowsArgs(args), "")
 }
@@ -785,23 +705,8 @@ func defaultAgentPath() string {
 	return filepath.Join(dir, "agent-windows-amd64.exe")
 }
 
-func defaultBundlePath(installDir string) string {
-	exePath, err := os.Executable()
-	if err == nil {
-		path := filepath.Join(filepath.Dir(exePath), installedBundle)
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-	if _, err := os.Stat(installedBundle); err == nil {
-		abs, _ := filepath.Abs(installedBundle)
-		return abs
-	}
-	return filepath.Join(installDir, installedBundle)
-}
-
-func installedPaths(installDir string) (string, string) {
-	return filepath.Join(installDir, installedAgentName), filepath.Join(installDir, installedBundle)
+func installedPath(installDir string) string {
+	return filepath.Join(installDir, installedAgentName)
 }
 
 func copyFile(src, dst string) error {

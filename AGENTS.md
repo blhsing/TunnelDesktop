@@ -2,24 +2,25 @@
 
 ## Project Overview
 
-TunnelDesktop is a Go + Android project for an RDP rendezvous tunnel. The normal relay is the Android app. The work PC runs `agent.exe` as a Windows service installed/configured by the Windows setup GUI. The home PC runs `client.exe` as a tray helper. `cmd/relay` and `tools/gencerts` are dev harness / VPS fallback utilities, not the normal deployment path.
+TunnelDesktop is a Go + Android + .NET project for an outbound-only RDP rendezvous tunnel. The normal relay is the Azure App Service at `https://test-officialwebsite.azurewebsites.net/relay/`, implemented by `azure-relay/`. Work, home, and Android components are configured by one shared relay room URL such as `https://test-officialwebsite.azurewebsites.net/relay/workdesk`.
 
 ## Architecture Rules
 
-- The Android app is the normal relay and setup hub.
-- `internal/relaycore` owns relay broker logic and identity generation.
-- `mobile/relaycore` is only the gomobile-safe wrapper around `internal/relaycore`.
+- The Azure App Service relay under `/relay/` is the normal broker.
+- A named room URL under `/relay/<room>` is the normal and only user-facing pairing configuration.
+- Do not reintroduce generated client files or file-based pairing artifacts for the normal path.
+- The Azure relay WebSocket endpoint is `/relay/ws` for the overview room and `/relay/<room>/ws` for named rooms.
+- The Azure relay should stay stateless with respect to credentials; pair sockets by room name unless a stronger explicit authentication design is added.
+- The Android app must not listen for public relay traffic or raw RDP in the normal architecture.
 - `cmd/agent` must remain Windows-service-first. Console mode is debug-only.
 - `cmd/agent-configurator` owns the native Windows setup/configurator GUI for the work agent service.
-- `cmd/client` must remain bundle/tray-first. Console mode is debug-only.
-- `.tnl` bundles are the primary user-facing configuration artifact.
-- Do not make users hand-copy PEM files for the normal setup path.
-- Keep raw RDP default-deny and hotspot/LAN allowlisted.
+- `cmd/client` must remain tray-first. Console mode is debug-only.
+- `cmd/relay` is a standalone local/dev harness for the older TLS/yamux path, not the normal Azure deployment path.
 - Do not add stealth, anti-monitoring, or obfuscation behavior.
 
 ## Sensitive Files
 
-`.tnl` files, generated cert directories, relay configs with inline PEM, and Android device-protected relay configs contain private keys or bearer tokens. Do not commit generated bundles, generated certs, logs containing bundles, or screenshots that expose bundle text.
+Relay configs with inline PEM, generated cert directories for local relay experiments, logs, and screenshots can contain private material. Do not commit generated certs, generated local relay configs, logs containing secrets, or screenshots that expose sensitive values.
 
 The current `.gitignore` excludes `dist/`, Android build output, APKs, AARs, and local Android properties. Preserve that behavior.
 
@@ -31,16 +32,16 @@ Run Go tests:
 go test ./...
 ```
 
+Build Azure relay zip:
+
+```powershell
+.\build\build-azure-relay.ps1
+```
+
 Build Windows/Linux Go artifacts:
 
 ```powershell
 .\build\build-go.ps1
-```
-
-Build gomobile AAR:
-
-```powershell
-.\build\build-aar.ps1
 ```
 
 Build Android debug APK:
@@ -49,16 +50,16 @@ Build Android debug APK:
 .\build\build-android.ps1
 ```
 
-When `internal/relaycore` or `mobile/relaycore` changes, rebuild the AAR and APK. When `cmd/agent`, `cmd/agent-configurator`, `cmd/client`, `cmd/relay`, `internal/tunnel`, or shared bundle types change, run `go test ./...` and `.\build\build-go.ps1`.
+When `cmd/agent`, `cmd/agent-configurator`, `cmd/client`, `cmd/relay`, `internal/tunnel`, or shared relay behavior changes, run `go test ./...` and `.\build\build-go.ps1`. When `azure-relay/` changes, run `.\build\build-azure-relay.ps1`. When Android Kotlin changes, run `.\build\build-android.ps1`.
 
 ## Tooling Notes
 
 This repo has been built with:
 
 - Go 1.26.x installed under `D:\Scoop`
+- .NET SDK 9.x, publishing the relay as `net8.0`
 - JDK under `D:\Scoop\apps\temurin17-jdk\current`
-- Android SDK/NDK under `D:\Android\Sdk`
-- gomobile/gobind under `D:\Go\bin`
+- Android SDK under `D:\Android\Sdk`
 - rsrc under `D:\Go\bin` for Windows GUI manifest resources
 - Gradle installed through Scoop
 
@@ -66,18 +67,20 @@ This repo has been built with:
 
 ## Deployment
 
-There is no configured external deploy target for this repo. For this project, "deployable artifacts" means:
+Deploy the Azure relay to the App Service backing `https://test-officialwebsite.azurewebsites.net/relay/`.
 
+Deployable artifacts:
+
+- `dist/azure-relay/tunneldesktop-azure-relay.zip`
 - `dist/bin/agent-windows-amd64.exe`
 - `dist/bin/agent-configurator-windows-amd64.exe`
 - `dist/bin/client-windows-amd64.exe`
 - `dist/bin/relay-windows-amd64.exe`
 - `dist/bin/relay-linux-amd64`
 - `dist/bin/relay-linux-arm64`
-- `android/app/libs/relaycore.aar`
 - `android/app/build/outputs/apk/debug/app-debug.apk`
 
-After code changes, build the relevant artifacts. Do not claim an external deployment was performed unless a real deployment target is added.
+After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested.
 
 ## Verification Expectations
 
@@ -95,27 +98,22 @@ For release-impacting Go changes, also run:
 .\build\build-go.ps1
 ```
 
-For Android or relaycore gomobile changes, run:
+For Azure relay changes, run:
 
 ```powershell
-.\build\build-aar.ps1
-.\build\build-android.ps1
+.\build\build-azure-relay.ps1
 ```
 
-## Phase 0 Constraint
+For Android changes, run:
 
-Do not present the phone relay path as proven unless the user has verified both:
-
-- cellular IPv6 inbound TCP to the phone works
-- the corporate proxy can CONNECT to the phone hostname or IPv6 on the selected relay port, default `8443`
-
-If either fails, the supported fallback is a public VPS running `cmd/relay`, with regenerated `.tnl` bundles pointing at that VPS.
+```powershell
+.\build\build-android.ps1
+```
 
 ## Coding Guidance
 
 - Prefer existing package boundaries and helper APIs.
-- Keep `internal/tunnel` focused on protocol primitives: TLS, auth, proxy CONNECT, yamux config, byte piping, allowlist.
-- Keep identity and bundle generation in `internal/relaycore`, not duplicated in CLIs or Kotlin.
-- Keep Android Kotlin thin; core relay behavior should stay in Go.
+- Keep `internal/tunnel` focused on protocol primitives: TLS, auth, proxy CONNECT, WebSocket dialing, yamux config, byte piping, and allowlist.
+- Keep Android Kotlin thin; Android should store a room URL and maintain outbound status, not implement the broker.
 - Use `apply_patch` for manual file edits.
 - Avoid committing generated private key material under `dist/` or elsewhere.
