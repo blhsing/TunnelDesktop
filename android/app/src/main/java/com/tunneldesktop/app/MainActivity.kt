@@ -191,10 +191,10 @@ class MainActivity : AppCompatActivity() {
         try {
             val options = JSONObject()
                 .put("relay_addr", relayAddr.text.toString().trim())
-                .put("relay_hosts", certificateNames())
+                .put("relay_hosts", jsonArray(certificateNames()))
                 .put("agent_proxy", agentProxyValue())
                 .put("raw_rdp_addr", "0.0.0.0:3389")
-                .put("raw_allowlist", rawAllow.text.toString().split(",").map { it.trim() }.filter { it.isNotEmpty() })
+                .put("raw_allowlist", jsonArray(rawAllowlist()))
                 .put("rdp_addr", "127.0.0.1:3389")
                 .put("client_listen", "127.0.0.1:3389")
             val result = JSONObject(Relaycore.generateSetup(options.toString()))
@@ -340,6 +340,19 @@ class MainActivity : AppCompatActivity() {
             .split(",")
             .map { normalizeCertificateName(it.trim()) }
             .filter { it.isNotEmpty() }
+    }
+
+    private fun rawAllowlist(): List<String> {
+        return rawAllow.text.toString()
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+    }
+
+    private fun jsonArray(values: List<String>): JSONArray {
+        return JSONArray().apply {
+            values.forEach { put(it) }
+        }
     }
 
     private fun normalizeCertificateName(value: String): String {
