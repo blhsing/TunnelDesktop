@@ -4,6 +4,35 @@ TunnelDesktop is an RDP rendezvous tunnel designed for a work PC that can only m
 
 Raw RDP is never exposed on the public internet listener. Public traffic uses TLS 1.3, mutual TLS, and a shared bearer token before any stream is opened.
 
+## Table Of Contents
+
+- [Status](#status)
+- [How It Works](#how-it-works)
+- [Installation](#installation)
+  - [1. Install Android Relay](#1-install-android-relay)
+  - [2. Keep Android Alive](#2-keep-android-alive)
+  - [3. Install Work Agent](#3-install-work-agent)
+  - [4. Run Home Client](#4-run-home-client)
+- [Deliverables](#deliverables)
+  - [Android Relay App](#android-relay-app)
+  - [Work Agent](#work-agent)
+  - [Home Client](#home-client)
+  - [Dev Harness And VPS Fallback](#dev-harness-and-vps-fallback)
+- [Security Model](#security-model)
+- [Phase 0 Feasibility](#phase-0-feasibility)
+- [Build Prerequisites](#build-prerequisites)
+- [Build Commands](#build-commands)
+- [PC Harness Workflow](#pc-harness-workflow)
+- [Configuration And Bundle Format](#configuration-and-bundle-format)
+- [Troubleshooting](#troubleshooting)
+  - [Agent Service Does Not Start](#agent-service-does-not-start)
+  - [Client Connects But RDP Fails](#client-connects-but-rdp-fails)
+  - [Android Relay Stops](#android-relay-stops)
+  - [Gradle Cannot Download Dependencies](#gradle-cannot-download-dependencies)
+- [Development](#development)
+- [Repository Layout](#repository-layout)
+- [Current Limitations](#current-limitations)
+
 ## Status
 
 This repo currently contains:
@@ -36,6 +65,63 @@ Work PC agent
 ```
 
 The relay is mandatory because the work PC cannot accept inbound traffic. The work agent arrives by dialing out, so the broker must hold that backend connection and splice home-side streams onto it. This is the same broad pattern as reverse SSH tunnels, frp, or chisel, but purpose-built for RDP.
+
+## Installation
+
+### 1. Install Android Relay
+
+Install `app-debug.apk` on the phone. For real use, produce and install a signed APK.
+
+Open the app:
+
+1. Enter the stable relay hostname and port, for example `phone.example.com:443`.
+2. Enter certificate names. Include the stable hostname. Add IP literals only for testing.
+3. Enter the work proxy, for example `http://proxy.example:8080`.
+4. Enter the hotspot raw-RDP allowlist if using the hotspot path.
+5. Tap `Generate`.
+6. Tap `Agent` and share `agent.tnl` to the work PC.
+7. Tap `Client` and share `client.tnl` to the home PC.
+8. Tap `Start`.
+
+### 2. Keep Android Alive
+
+For reliability:
+
+- Keep the phone plugged in.
+- Set the app battery mode to unrestricted.
+- Disable aggressive vendor battery killing or enable autostart/protected-app allowlisting.
+- Leave `Start on boot` enabled.
+- Use the optional VPN persistence mode only for phones that still kill the foreground service.
+
+Do not enable Android VPN lockdown mode for the no-route persistence VPN. Lockdown can strand the phone's internet or hotspot if the persistence service is down.
+
+### 3. Install Work Agent
+
+Put these beside each other:
+
+```text
+agent.exe
+agent.tnl
+```
+
+Double-click `agent.exe`. It should request UAC and install the Windows service.
+
+Check:
+
+```powershell
+.\agent.exe -status
+.\agent.exe -self-test -bundle .\agent.tnl
+```
+
+### 4. Run Home Client
+
+Import the bundle:
+
+```powershell
+.\client.exe -import .\client.tnl
+```
+
+Start `client.exe`, use the tray `Connect` item, and wait for Remote Desktop to open.
 
 ## Deliverables
 
@@ -201,63 +287,6 @@ dist/bin/relay-linux-arm64
 android/app/libs/relaycore.aar
 android/app/build/outputs/apk/debug/app-debug.apk
 ```
-
-## Normal Setup
-
-### 1. Install Android Relay
-
-Install `app-debug.apk` on the phone. For real use, produce and install a signed APK.
-
-Open the app:
-
-1. Enter the stable relay hostname and port, for example `phone.example.com:443`.
-2. Enter certificate names. Include the stable hostname. Add IP literals only for testing.
-3. Enter the work proxy, for example `http://proxy.example:8080`.
-4. Enter the hotspot raw-RDP allowlist if using the hotspot path.
-5. Tap `Generate`.
-6. Tap `Agent` and share `agent.tnl` to the work PC.
-7. Tap `Client` and share `client.tnl` to the home PC.
-8. Tap `Start`.
-
-### 2. Keep Android Alive
-
-For reliability:
-
-- Keep the phone plugged in.
-- Set the app battery mode to unrestricted.
-- Disable aggressive vendor battery killing or enable autostart/protected-app allowlisting.
-- Leave `Start on boot` enabled.
-- Use the optional VPN persistence mode only for phones that still kill the foreground service.
-
-Do not enable Android VPN lockdown mode for the no-route persistence VPN. Lockdown can strand the phone's internet or hotspot if the persistence service is down.
-
-### 3. Install Work Agent
-
-Put these beside each other:
-
-```text
-agent.exe
-agent.tnl
-```
-
-Double-click `agent.exe`. It should request UAC and install the Windows service.
-
-Check:
-
-```powershell
-.\agent.exe -status
-.\agent.exe -self-test -bundle .\agent.tnl
-```
-
-### 4. Run Home Client
-
-Import the bundle:
-
-```powershell
-.\client.exe -import .\client.tnl
-```
-
-Start `client.exe`, use the tray `Connect` item, and wait for Remote Desktop to open.
 
 ## PC Harness Workflow
 
