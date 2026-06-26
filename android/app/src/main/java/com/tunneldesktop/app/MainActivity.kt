@@ -1,6 +1,9 @@
 package com.tunneldesktop.app
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
@@ -17,10 +20,14 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import org.json.JSONObject
 import relaycore.Relaycore
+import java.net.Inet6Address
+import java.net.NetworkInterface
+import java.util.Collections
 
 class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
@@ -28,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var relayHosts: EditText
     private lateinit var agentProxy: EditText
     private lateinit var rawAllow: EditText
+    private lateinit var publicIpv6: TextView
     private lateinit var status: TextView
     private lateinit var logs: TextView
 
@@ -53,6 +61,10 @@ class MainActivity : AppCompatActivity() {
         relayHosts = edit("Certificate names", prefs.getString("relay_hosts", "phone.example.com") ?: "")
         agentProxy = edit("Work proxy", prefs.getString("agent_proxy", "http://PROXY:PORT") ?: "")
         rawAllow = edit("Hotspot allowlist", prefs.getString("raw_allow", "192.168.43.0/24") ?: "")
+        publicIpv6 = TextView(this).apply {
+            textSize = 14f
+            setTextIsSelectable(true)
+        }
         status = TextView(this).apply { textSize = 14f }
 
         val row1 = row()
@@ -78,6 +90,11 @@ class MainActivity : AppCompatActivity() {
         row3.addView(button("VPN") { requestVpnPersistence() })
         row3.addView(button("Status") { refreshStatus() })
 
+        val row4 = row()
+        row4.addView(button("Detect IPv6") { refreshPublicIpv6() })
+        row4.addView(button("Use IPv6") { applyPublicIpv6() })
+        row4.addView(button("Copy IPv6") { copyPublicIpv6() })
+
         val autostart = CheckBox(this).apply {
             text = "Start on boot"
             isChecked = prefs.getBoolean("autostart", true)
@@ -95,9 +112,11 @@ class MainActivity : AppCompatActivity() {
         root.addView(relayHosts)
         root.addView(agentProxy)
         root.addView(rawAllow)
+        root.addView(publicIpv6)
         root.addView(row1)
         root.addView(row2)
         root.addView(row3)
+        root.addView(row4)
         root.addView(autostart)
         root.addView(status)
         root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -140,6 +159,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshStatus(extra: String = "") {
+        refreshPublicIpv6()
         val hasConfig = !prefs.getString("config", "").isNullOrBlank()
         val hasAgent = !prefs.getString("agent_bundle", "").isNullOrBlank()
         val hasClient = !prefs.getString("client_bundle", "").isNullOrBlank()
@@ -152,12 +172,102 @@ class MainActivity : AppCompatActivity() {
         ).filter { it.isNotBlank() }.joinToString("  ")
     }
 
+    private fun refreshPublicIpv6() {
+        val candidates = publicIpv6Candidates()
+        val port = relayPort()
+        publicIpv6.text = if (candidates.isEmpty()) {
+            "Public IPv6: none detected"
+        } else {
+            val primary = candidates.first()
+            val lines = mutableListOf(
+                "Public IPv6: ${primary.address} (${primary.interfaceName})",
+                "Agent relay address: [${primary.address}]:$port"
+            )
+            if (candidates.size > 1) {
+                lines.add("Other IPv6: " + candidates.drop(1).joinToString(", ") { "${it.address} (${it.interfaceName})" })
+            }
+            lines.joinToString("\n")
+        }
+    }
+
+    private fun applyPublicIpv6() {
+        val candidate = publicIpv6Candidates().firstOrNull()
+        if (candidate == null) {
+            refreshStatus("No public IPv6 detected")
+            return
+        }
+        val port = relayPort()
+        relayAddr.setText("[${candidate.address}]:$port")
+        val hosts = relayHosts.text.toString()
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != candidate.address }
+        relayHosts.setText((listOf(candidate.address) + hosts).joinToString(","))
+        prefs.edit()
+            .putString("relay_addr", relayAddr.text.toString())
+            .putString("relay_hosts", relayHosts.text.toString())
+            .apply()
+        refreshStatus("IPv6 applied; regenerate bundles")
+    }
+
+    private fun copyPublicIpv6() {
+        val candidate = publicIpv6Candidates().firstOrNull()
+        if (candidate == null) {
+            refreshStatus("No public IPv6 detected")
+            return
+        }
+        val relay = "[${candidate.address}]:${relayPort()}"
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("TunnelDesktop relay address", relay))
+        Toast.makeText(this, "Copied $relay", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun publicIpv6Candidates(): List<PublicIpv6> {
+        return try {
+            Collections.list(NetworkInterface.getNetworkInterfaces())
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { iface ->
+                    Collections.list(iface.inetAddresses)
+                        .filterIsInstance<Inet6Address>()
+                        .mapNotNull { address ->
+                            val host = address.hostAddress?.substringBefore("%") ?: return@mapNotNull null
+                            if (isPublicIpv6(address)) PublicIpv6(iface.name, host) else null
+                        }
+                }
+                .distinctBy { it.address }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun isPublicIpv6(address: Inet6Address): Boolean {
+        if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress) return false
+        if (address.isSiteLocalAddress || address.isMulticastAddress) return false
+        val first = address.address[0].toInt() and 0xff
+        if ((first and 0xfe) == 0xfc) return false
+        return true
+    }
+
+    private fun relayPort(): String {
+        val value = relayAddr.text.toString().trim()
+        if (value.startsWith("[")) {
+            val end = value.indexOf("]")
+            if (end >= 0 && value.length > end + 2 && value[end + 1] == ':') {
+                return value.substring(end + 2)
+            }
+            return "443"
+        }
+        return if (value.count { it == ':' } == 1) value.substringAfterLast(":") else "443"
+    }
+
+    private data class PublicIpv6(val interfaceName: String, val address: String)
+
     private fun edit(hintText: String, value: String): EditText =
         EditText(this).apply {
-			hint = hintText
-			setText(value)
-			setSingleLine(true)
-		}
+            hint = hintText
+            setText(value)
+            setSingleLine(true)
+        }
 
     private fun row(): LinearLayout =
         LinearLayout(this).apply {

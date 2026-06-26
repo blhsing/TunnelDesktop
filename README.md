@@ -64,13 +64,14 @@ Install `app-debug.apk` on the phone. For real use, produce and install a signed
 Open the app:
 
 1. Enter the stable relay hostname and port, for example `phone.example.com:443`.
-2. Enter certificate names. Include the stable hostname. Add IP literals only for testing.
-3. Enter the work proxy, for example `http://proxy.example:8080`.
-4. Enter the hotspot raw-RDP allowlist if using the hotspot path.
-5. Tap `Generate`.
-6. Tap `Agent` and share `agent.tnl` to the work PC.
-7. Tap `Client` and share `client.tnl` to the home PC.
-8. Tap `Start`.
+2. If the phone has no stable hostname, tap `Detect IPv6`, confirm the shown public IPv6, then tap `Use IPv6`. This fills the relay address as `[public-ipv6]:443` and adds the raw IPv6 literal to the certificate names.
+3. Enter certificate names. Include the stable hostname, or the raw IPv6 literal when using the detected public IPv6 path.
+4. Enter the work proxy, for example `http://proxy.example:8080`.
+5. Enter the hotspot raw-RDP allowlist if using the hotspot path.
+6. Tap `Generate`.
+7. Tap `Agent` and share `agent.tnl` to the work PC.
+8. Tap `Client` and share `client.tnl` to the home PC.
+9. Tap `Start`.
 
 ### 2. Keep Android Alive
 
@@ -129,6 +130,7 @@ It:
 - Runs the relay core through `relaycore.aar`.
 - Hosts a `FOREGROUND_SERVICE_SPECIAL_USE` foreground service.
 - Supports boot restart, locked-boot restart, watchdog alarm restart, partial WakeLock, WifiLock, and optional no-route `VpnService` persistence mode.
+- Shows detected public IPv6 candidates and the bracketed relay address the work agent can use when there is no stable hostname.
 - Provides basic setup, status, log, and export UI.
 
 ### Work Agent
@@ -475,5 +477,6 @@ Phase 0 network feasibility still must be proven on the real phone/carrier/work-
 
 - Phase 0 phone/carrier/proxy reachability cannot be automated from this repo.
 - Android UI is intentionally functional and minimal; signed release packaging is not yet added.
+- Public IPv6 display does not make the address stable. Regenerate and redistribute bundles if the carrier rotates the phone address and no DDNS hostname is used.
 - The optional VPN persistence mode is a no-route persistence hook, not a traffic tunnel.
 - QR export is planned but not currently implemented; bundles export through Android share text.
