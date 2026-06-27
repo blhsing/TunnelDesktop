@@ -1,8 +1,8 @@
 # TunnelDesktop
 
-TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `python-relay/`. The work-side Windows service and Windows home app connect out to relay web services over WebSockets.
+TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `python-relay/`. The work-side Windows service, Windows home app, and Android home app connect out to relay web services over WebSockets.
 
-The Windows home app connects to one relay room URL at a time. The work agent can connect to one or more relay room URLs at the same time, as long as they use the same room name. For example:
+Home apps connect to one relay room URL at a time. The work agent can connect to one or more relay room URLs at the same time, as long as they use the same room name. For example:
 
 ```text
 https://test-officialwebsite.azurewebsites.net/relay/workdesk
@@ -10,6 +10,8 @@ http://217.142.228.117/relay/workdesk
 ```
 
 The room name is the path segment after `/relay/`. The first endpoint to use a room creates it in memory on that relay, and later endpoints join the same room by using the same URL.
+
+The Android app is a home-agent client like the Windows home app. It is not a phone-hosted relay service.
 
 ## Table Of Contents
 
@@ -20,12 +22,14 @@ The room name is the path segment after `/relay/`. The first endpoint to use a r
   - [3. Choose A Room URL](#3-choose-a-room-url)
   - [4. Install Work Agent](#4-install-work-agent)
   - [5. Run Home App](#5-run-home-app)
+  - [6. Run Android Home App](#6-run-android-home-app)
 - [Deliverables](#deliverables)
   - [Azure Relay Web Service](#azure-relay-web-service)
   - [Python Relay Web Service](#python-relay-web-service)
   - [Work Agent](#work-agent)
   - [Agent Configurator](#agent-configurator)
   - [Home App](#home-app)
+  - [Android Home App](#android-home-app)
 - [Security Model](#security-model)
 - [Build Prerequisites](#build-prerequisites)
 - [Build Commands](#build-commands)
@@ -64,6 +68,8 @@ agent.exe Windows service
 The relay groups sockets by room name. A waiting work-agent socket is paired with one home-client socket from the same room, then the relay copies binary WebSocket frames in both directions. The relay does not store credentials or generated client files.
 
 The home app also keeps a lightweight `home-agent` presence WebSocket open while it is running. That presence socket lets the Azure dashboard and the home control panel show whether the home side is online; RDP data still flows only when the home app starts a local listener and Remote Desktop connects to it.
+
+The Android home app follows the same model. It runs a foreground service, listens on Android loopback, and lets a separate Android RDP client connect to `127.0.0.1:<port>` on the phone. The phone is not a relay and does not need inbound access from the internet.
 
 ## Installation
 
@@ -175,6 +181,22 @@ The home app stores its room URL, local RDP address, and proxy mode in `%APPDATA
 .\client-windows-amd64.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
+### 6. Run Android Home App
+
+Install the debug-signed APK:
+
+```text
+dist\android\tunneldesktop-home-android-debug.apk
+```
+
+Open TunnelDesktop Home, enter the same relay room URL as the work agent, keep the local RDP port at `3389`, and start the tunnel. Fresh installs use `3389` by default, and upgrades from the old app default migrate `3390` to `3389`. In an Android RDP client, connect to:
+
+```text
+127.0.0.1:3389
+```
+
+The Android app keeps the tunnel alive through a foreground service while you switch to the RDP client. It also maintains the same `home-agent` presence socket used by the relay dashboard.
+
 ## Deliverables
 
 ### Azure Relay Web Service
@@ -275,13 +297,27 @@ It:
 - A loopback RDP listener, normally `127.0.0.1:3390`.
 - Automatic Remote Desktop launch when the user clicks `Connect`.
 
+### Android Home App
+
+`android-home/` is the Android home endpoint from the `v0.3.6` release. It is not an RDP client by itself; it provides the loopback tunnel that an Android RDP client uses.
+
+It provides:
+
+- A native Android control panel with relay room URL, local RDP port, status tiles, activity log, copy, dashboard, and RDP launch actions.
+- A foreground service so the tunnel can keep running while another app is active.
+- A loopback RDP listener, normally `127.0.0.1:3389`.
+- One outbound `client` WebSocket per local RDP connection.
+- A persistent `home-agent` presence WebSocket while the service is running.
+
+Good free Android RDP client options include Microsoft's Remote Desktop/Windows App client and the open-source FreeRDP-based aFreeRDP client. Configure the RDP client to connect to the TunnelDesktop local target shown in the Android app.
+
 ## Security Model
 
 - Work and home endpoints make outbound HTTPS WebSocket connections only.
 - The room name in the URL is the pairing key.
 - The relay never dials the work PC or home PC.
 - The work agent only dials `127.0.0.1:3389` after Azure has paired a same-room home connection.
-- The home app listens on loopback by default, so other LAN devices cannot connect to the local RDP listener unless the user intentionally changes the listen address.
+- Home apps listen on loopback by default, so other LAN devices cannot connect to the local RDP listener unless the user intentionally changes the listen address.
 
 Choose room names that are not obvious. Anyone who knows the room URL can attempt to join that room.
 
@@ -294,6 +330,8 @@ Required:
 - Go 1.25+.
 - .NET SDK 8+ for the Azure relay.
 - Python 3.11+ for the Python relay.
+- JDK 17+ plus Android SDK platform 35 and build-tools 35.0.0 for the Android home app.
+- Gradle 9.x, or a compatible Gradle installation on `PATH`, for the Android home app.
 - `rsrc` for Windows GUI manifest resources; `build\build-go.ps1` installs it under `D:\Go\bin` when missing.
 
 This repo has been built with Go installed under `D:\Scoop` and .NET SDK 9.x publishing the relay as `net8.0`.
@@ -318,6 +356,12 @@ Build Go binaries:
 .\build\build-go.ps1
 ```
 
+Build Android home APK:
+
+```powershell
+.\build\build-android-home.ps1
+```
+
 Artifacts:
 
 ```text
@@ -327,6 +371,7 @@ dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip
 dist\bin\agent-windows-amd64.exe
 dist\bin\agent-configurator-windows-amd64.exe
 dist\bin\client-windows-amd64.exe
+dist\android\tunneldesktop-home-android-debug.apk
 ```
 
 ## URL Configuration
@@ -434,6 +479,7 @@ python-relay/     Python/FastAPI WebSocket relay
 cmd/agent         Windows service work-side agent
 cmd/agent-configurator Windows service setup/configurator GUI
 cmd/client        Windows control-panel/tray home app
+android-home/     Android foreground-service home app
 internal/tunnel   WebSocket, proxy, pipe, and role helpers
 build/            build scripts
 ```
@@ -449,7 +495,8 @@ This repo currently contains:
 - Windows work agent implemented as a Windows service deliverable.
 - Windows configurator GUI for installing and managing the work agent service.
 - Windows home app implemented as a friendly control-panel and tray deliverable.
-- Build scripts for Go binaries and relay packages.
+- Android home app implemented as a foreground-service loopback tunnel endpoint.
+- Build scripts for Go binaries, relay packages, and the Android APK.
 
 ## Current Limitations
 
@@ -457,3 +504,4 @@ This repo currently contains:
 - Multiple App Service instances are not supported unless sticky routing or shared broker state is added.
 - The Go work agent supports direct, environment, and basic HTTP proxy URLs. NTLM proxy authentication is not implemented in the service.
 - The home app is a Windows RDP launcher and tunnel endpoint, not a full RDP client.
+- The Android home app is also a tunnel endpoint, not a full RDP client; use a separate Android RDP client against `127.0.0.1:3389`.
