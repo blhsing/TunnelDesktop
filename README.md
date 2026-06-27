@@ -1,14 +1,15 @@
 # TunnelDesktop
 
-TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `python-relay/`. The work-side Windows service and home-side apps connect out to the relay over WebSockets.
+TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `python-relay/`. The work-side Windows service and Windows home app connect out to relay web services over WebSockets.
 
-Configuration is a single shared relay room URL. For example:
+The Windows home app connects to one relay room URL at a time. The work agent can connect to one or more relay room URLs at the same time, as long as they use the same room name. For example:
 
 ```text
 https://test-officialwebsite.azurewebsites.net/relay/workdesk
+http://217.142.228.117/relay/workdesk
 ```
 
-The room name is the path segment after `/relay/`. The first endpoint to use a room creates it in memory, and later endpoints join the same room by using the same URL.
+The room name is the path segment after `/relay/`. The first endpoint to use a room creates it in memory on that relay, and later endpoints join the same room by using the same URL.
 
 ## Table Of Contents
 
@@ -19,14 +20,12 @@ The room name is the path segment after `/relay/`. The first endpoint to use a r
   - [3. Choose A Room URL](#3-choose-a-room-url)
   - [4. Install Work Agent](#4-install-work-agent)
   - [5. Run Home App](#5-run-home-app)
-  - [6. Run Android Home App](#6-run-android-home-app)
 - [Deliverables](#deliverables)
   - [Azure Relay Web Service](#azure-relay-web-service)
   - [Python Relay Web Service](#python-relay-web-service)
   - [Work Agent](#work-agent)
   - [Agent Configurator](#agent-configurator)
   - [Home App](#home-app)
-  - [Android Home App](#android-home-app)
 - [Security Model](#security-model)
 - [Build Prerequisites](#build-prerequisites)
 - [Build Commands](#build-commands)
@@ -52,21 +51,19 @@ client.exe
   outbound WebSocket over HTTPS
         |
         v
-Azure App Service relay
-  dashboard: https://test-officialwebsite.azurewebsites.net/relay/workdesk
-  data:      wss://test-officialwebsite.azurewebsites.net/relay/workdesk/ws
+Relay web service
+  Azure: https://test-officialwebsite.azurewebsites.net/relay/workdesk
+  OCI:   http://217.142.228.117/relay/workdesk
         |
         v
 agent.exe Windows service
-  outbound WebSocket over HTTPS, optionally through HTTP proxy
+  outbound WebSockets to one or more relay services, optionally through HTTP proxy
   per paired socket -> 127.0.0.1:3389
 ```
 
 The relay groups sockets by room name. A waiting work-agent socket is paired with one home-client socket from the same room, then the relay copies binary WebSocket frames in both directions. The relay does not store credentials or generated client files.
 
 The home app also keeps a lightweight `home-agent` presence WebSocket open while it is running. That presence socket lets the Azure dashboard and the home control panel show whether the home side is online; RDP data still flows only when the home app starts a local listener and Remote Desktop connects to it.
-
-The Android home app follows the same model. It runs a foreground service, listens on Android loopback, and lets a separate Android RDP client connect to `127.0.0.1:<port>` on the phone. The phone is not a relay and does not need inbound access from the internet.
 
 ## Installation
 
@@ -133,7 +130,7 @@ For the OCI relay, the equivalent room URL is:
 http://217.142.228.117/relay/workdesk
 ```
 
-Use exactly the same URL on the work agent and the home app.
+Use the same room name everywhere. The home app uses one relay URL. The work agent can use both URLs so the home app can reach the work PC through either relay service.
 
 ### 4. Install Work Agent
 
@@ -143,12 +140,13 @@ Run the configurator:
 agent-configurator-windows-amd64.exe
 ```
 
-It defaults to `D:\TunnelDesktop\Agent` when `D:` exists. Select `agent-windows-amd64.exe`, enter the relay room URL, then click `Install / Update`. The configurator copies the work agent as `agent.exe`, installs or updates the automatic `TunnelDesktopAgent` Windows service, configures SCM restart recovery, and starts the service.
+It defaults to `D:\TunnelDesktop\Agent` when `D:` exists. Select `agent-windows-amd64.exe`, enter one or more relay room URLs, then click `Install / Update`. The configurator copies the work agent as `agent.exe`, installs or updates the automatic `TunnelDesktopAgent` Windows service, configures SCM restart recovery, and starts the service.
 
 Command-line install is also supported:
 
 ```powershell
 .\agent-windows-amd64.exe -install -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+.\agent-windows-amd64.exe -install -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
 ```
 
 Useful checks:
@@ -156,6 +154,7 @@ Useful checks:
 ```powershell
 .\agent-windows-amd64.exe -status
 .\agent-windows-amd64.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+.\agent-windows-amd64.exe -self-test -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
 ```
 
 WebSocket mode uses standard proxy environment variables by default, such as `HTTP_PROXY` and `HTTPS_PROXY`. Use `-proxy http://proxy.example:8080` to force a proxy, or `-proxy direct` to bypass proxy discovery.
@@ -175,22 +174,6 @@ The home app stores its room URL, local RDP address, and proxy mode in `%APPDATA
 ```powershell
 .\client-windows-amd64.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
-
-### 6. Run Android Home App
-
-Install the debug-signed APK:
-
-```text
-dist\android\tunneldesktop-home-android-debug.apk
-```
-
-Open TunnelDesktop Home, enter the same relay room URL as the work agent, keep the local RDP port at `3389`, and start the tunnel. Fresh installs use `3389` by default, and upgrades from the old app default migrate `3390` to `3389`. In an Android RDP client, connect to:
-
-```text
-127.0.0.1:3389
-```
-
-The Android app keeps the tunnel alive through a foreground service while you switch to the RDP client. It also maintains the same `home-agent` presence socket used by the relay dashboard.
 
 ## Deliverables
 
@@ -255,13 +238,15 @@ Default behavior:
 
 - `agent.exe` with no args uses the default relay room URL.
 - `-relay-url <url>` selects a named room.
-- The service keeps a small pool of idle outbound WebSockets to Azure.
-- When Azure pairs a socket, the agent dials `127.0.0.1:3389` and pipes bytes.
+- `-relay-url` can be repeated or can contain comma, semicolon, or newline separated URLs.
+- The service keeps a small pool of idle outbound WebSockets per configured relay URL.
+- When any configured relay pairs a socket, the agent dials `127.0.0.1:3389` and pipes bytes.
 
 Debug and operations:
 
 ```powershell
 .\agent.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+.\agent.exe -console -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
 .\agent.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 .\agent.exe -status
 .\agent.exe -uninstall
@@ -275,7 +260,7 @@ It:
 
 - Prefers `D:\TunnelDesktop\Agent` as the install directory when `D:` exists.
 - Copies the selected agent binary to `agent.exe`.
-- Installs or updates the automatic `TunnelDesktopAgent` Windows service with the configured relay URL.
+- Installs or updates the automatic `TunnelDesktopAgent` Windows service with the configured relay URL list.
 - Configures SCM restart recovery.
 - Starts, stops, restarts, uninstalls, refreshes status, opens the install folder, and runs `agent.exe -self-test`.
 
@@ -289,20 +274,6 @@ It:
 - Persistent home-app presence on the relay dashboard.
 - A loopback RDP listener, normally `127.0.0.1:3390`.
 - Automatic Remote Desktop launch when the user clicks `Connect`.
-
-### Android Home App
-
-`android-home/` is the Android home endpoint. It is not an RDP client by itself; it provides the loopback tunnel that an Android RDP client uses.
-
-It provides:
-
-- A native Android control panel with relay room URL, local RDP port, status tiles, activity log, copy, dashboard, and RDP launch actions.
-- A foreground service so the tunnel can keep running while another app is active.
-- A loopback RDP listener, normally `127.0.0.1:3389`.
-- One outbound `client` WebSocket per local RDP connection.
-- A persistent `home-agent` presence WebSocket while the service is running.
-
-Good free Android RDP client options include Microsoft's Remote Desktop/Windows App client and the open-source FreeRDP-based aFreeRDP client. Configure the RDP client to connect to the TunnelDesktop local target shown in the Android app.
 
 ## Security Model
 
@@ -323,8 +294,6 @@ Required:
 - Go 1.25+.
 - .NET SDK 8+ for the Azure relay.
 - Python 3.11+ for the Python relay.
-- JDK 17+ plus Android SDK platform 35 and build-tools 35.0.0 for the Android home app.
-- Gradle 9.x, or a compatible Gradle installation on `PATH`, for the Android home app.
 - `rsrc` for Windows GUI manifest resources; `build\build-go.ps1` installs it under `D:\Go\bin` when missing.
 
 This repo has been built with Go installed under `D:\Scoop` and .NET SDK 9.x publishing the relay as `net8.0`.
@@ -349,12 +318,6 @@ Build Go binaries:
 .\build\build-go.ps1
 ```
 
-Build Android home APK:
-
-```powershell
-.\build\build-android-home.ps1
-```
-
 Artifacts:
 
 ```text
@@ -364,12 +327,11 @@ dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip
 dist\bin\agent-windows-amd64.exe
 dist\bin\agent-configurator-windows-amd64.exe
 dist\bin\client-windows-amd64.exe
-dist\android\tunneldesktop-home-android-debug.apk
 ```
 
 ## URL Configuration
 
-Use one shared URL:
+Use one shared room name:
 
 ```text
 https://test-officialwebsite.azurewebsites.net/relay/<room>
@@ -385,6 +347,8 @@ Rules:
 
 - `<room>` is created automatically on first use.
 - Reusing the same URL joins the same room.
+- The work agent may use multiple relay URLs at once when each URL uses the same `<room>`.
+- The home app chooses one relay URL for the current connection.
 - The WebSocket endpoint is derived automatically as `/relay/<room>/ws`.
 - The base `/relay/` path is an overview dashboard.
 - No generated pairing files are required for the normal Azure WebSocket path.
@@ -399,7 +363,7 @@ Run:
 .\agent.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
-For Azure mode, self-test checks local RDP and then opens a `probe` WebSocket.
+Self-test checks local RDP and then opens a `probe` WebSocket to each configured relay URL.
 
 Common causes:
 
@@ -413,7 +377,7 @@ Common causes:
 
 Check:
 
-- The home app status tiles show the same room URL as the work agent.
+- The home app status tiles show a room URL that is also configured on the work agent.
 - The room dashboard shows waiting work-agent sockets.
 - The agent service is running.
 - Work PC allows RDP.
@@ -470,8 +434,7 @@ python-relay/     Python/FastAPI WebSocket relay
 cmd/agent         Windows service work-side agent
 cmd/agent-configurator Windows service setup/configurator GUI
 cmd/client        Windows control-panel/tray home app
-android-home/     Android foreground-service home app
-internal/tunnel   TLS, auth, CONNECT, WebSocket, yamux, pipe, allowlist
+internal/tunnel   WebSocket, proxy, pipe, and role helpers
 build/            build scripts
 ```
 
@@ -486,8 +449,7 @@ This repo currently contains:
 - Windows work agent implemented as a Windows service deliverable.
 - Windows configurator GUI for installing and managing the work agent service.
 - Windows home app implemented as a friendly control-panel and tray deliverable.
-- Android home app implemented as a foreground-service loopback tunnel endpoint.
-- Build scripts for Go binaries, relay packages, and the Android APK.
+- Build scripts for Go binaries and relay packages.
 
 ## Current Limitations
 
@@ -495,4 +457,3 @@ This repo currently contains:
 - Multiple App Service instances are not supported unless sticky routing or shared broker state is added.
 - The Go work agent supports direct, environment, and basic HTTP proxy URLs. NTLM proxy authentication is not implemented in the service.
 - The home app is a Windows RDP launcher and tunnel endpoint, not a full RDP client.
-- The Android home app is also a tunnel endpoint, not a full RDP client; use a separate Android RDP client against `127.0.0.1:3389`.

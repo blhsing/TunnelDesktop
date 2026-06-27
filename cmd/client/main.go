@@ -30,28 +30,18 @@ import (
 )
 
 const (
-	defaultRelayURL         = "https://test-officialwebsite.azurewebsites.net/relay/workdesk"
-	defaultListenAddr       = "127.0.0.1:3390"
-	legacyDefaultListenAddr = "127.0.0.1:3389"
-	appIconResourceID       = 2
-	statusTileWidth         = 150
-	rdpStatusTileWidth      = 230
+	defaultRelayURL    = "https://test-officialwebsite.azurewebsites.net/relay/workdesk"
+	defaultListenAddr  = "127.0.0.1:3390"
+	appIconResourceID  = 2
+	statusTileWidth    = 150
+	rdpStatusTileWidth = 230
 )
 
 type config struct {
-	RelayMode  string `json:"relay_mode"`
 	ListenAddr string `json:"listen_addr"`
 	RelayAddr  string `json:"relay_addr"`
 	Proxy      string `json:"proxy"`
 	RDPUser    string `json:"rdp_user,omitempty"`
-	CAFile     string `json:"ca_file,omitempty"`
-	CertFile   string `json:"cert_file,omitempty"`
-	KeyFile    string `json:"key_file,omitempty"`
-	CAPEM      string `json:"ca_pem,omitempty"`
-	CertPEM    string `json:"cert_pem,omitempty"`
-	KeyPEM     string `json:"key_pem,omitempty"`
-	ServerName string `json:"server_name,omitempty"`
-	Token      string `json:"token,omitempty"`
 }
 
 type clientApp struct {
@@ -125,13 +115,11 @@ type relaySummary struct {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	var configFile string
 	var relayURL string
 	var listenAddr string
 	var proxyFlag string
 	var consoleMode bool
 	var smokeTest bool
-	flag.StringVar(&configFile, "config", "", "legacy JSON config file")
 	flag.StringVar(&relayURL, "relay-url", "", "Azure relay room URL")
 	flag.StringVar(&listenAddr, "listen", "", "local RDP listen address")
 	flag.StringVar(&proxyFlag, "proxy", "", "proxy: env, direct, or http://host:port")
@@ -139,7 +127,7 @@ func main() {
 	flag.BoolVar(&smokeTest, "ui-smoke-test", false, "start and close the GUI")
 	flag.Parse()
 
-	cfg, err := loadConfig(configFile, relayURL, listenAddr, proxyFlag)
+	cfg, err := loadConfig(relayURL, listenAddr, proxyFlag)
 	if err != nil {
 		windowsMessageBox(appTitle(), err.Error(), windows.MB_OK|windows.MB_ICONERROR)
 		os.Exit(1)
@@ -418,7 +406,6 @@ func (a *clientApp) saveFromUI(showMessage bool) error {
 
 func (a *clientApp) configFromUI() (config, error) {
 	cfg := config{
-		RelayMode:  "websocket",
 		RelayAddr:  strings.TrimSpace(a.relayURL.Text()),
 		ListenAddr: strings.TrimSpace(a.listenAddr.Text()),
 		Proxy:      strings.TrimSpace(a.proxy.Text()),
@@ -460,17 +447,10 @@ func (a *clientApp) currentConfig() config {
 func (a *clientApp) startTunnel(openRDP bool) error {
 	cfg := a.currentConfig()
 	ctx, cancel := context.WithCancel(context.Background())
-	listener, cfg, usedFallback, err := listenLocalRDP(cfg)
+	listener, err := listenLocalRDP(cfg)
 	if err != nil {
 		cancel()
 		return localListenError(cfg.ListenAddr, err)
-	}
-	if usedFallback {
-		a.setConfig(cfg)
-		if err := saveSettingsConfig(cfg); err != nil {
-			a.appendLog("Could not save fallback local RDP address: %v", err)
-		}
-		a.appendLog("Port 3389 was unavailable; using %s for the home-side RDP listener.", cfg.ListenAddr)
 	}
 
 	a.mu.Lock()
@@ -675,7 +655,7 @@ func (a *clientApp) restartHomePresence() {
 func (a *clientApp) homePresenceLoop(ctx context.Context, cfg config) {
 	for {
 		a.setHomePresence("Connecting")
-		conn, err := tunnel.DialWebSocket(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleHomeAgent, cfg.Token)
+		conn, err := tunnel.DialWebSocket(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleHomeAgent, "")
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -788,27 +768,14 @@ func (a *clientApp) shutdown() {
 	}
 }
 
-func loadConfig(configFile, relayURL, listenAddr, proxyFlag string) (config, error) {
-	var cfg config
-	if strings.TrimSpace(configFile) != "" {
-		data, err := os.ReadFile(configFile)
-		if err != nil {
-			return config{}, fmt.Errorf("read config: %w", err)
-		}
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return config{}, fmt.Errorf("decode config: %w", err)
-		}
-		cfg.resolvePaths(filepath.Dir(configFile))
-	} else {
-		cfg = defaultConfig()
-		if saved, ok, err := loadSavedConfig(); err != nil {
-			return config{}, err
-		} else if ok {
-			cfg.merge(saved)
-		}
+func loadConfig(relayURL, listenAddr, proxyFlag string) (config, error) {
+	cfg := defaultConfig()
+	if saved, ok, err := loadSavedConfig(); err != nil {
+		return config{}, err
+	} else if ok {
+		cfg.merge(saved)
 	}
 	if strings.TrimSpace(relayURL) != "" {
-		cfg.RelayMode = "websocket"
 		cfg.RelayAddr = strings.TrimSpace(relayURL)
 	}
 	if strings.TrimSpace(listenAddr) != "" {
@@ -818,22 +785,16 @@ func loadConfig(configFile, relayURL, listenAddr, proxyFlag string) (config, err
 		cfg.Proxy = strings.TrimSpace(proxyFlag)
 	}
 	cfg.applyDefaults()
-	if strings.TrimSpace(configFile) == "" && strings.TrimSpace(listenAddr) == "" && isLegacyDefaultListenAddr(cfg.ListenAddr) {
-		cfg.ListenAddr = defaultListenAddr
+	normalized, err := normalizeRelayURL(cfg.RelayAddr)
+	if err != nil {
+		return config{}, err
 	}
-	if tunnel.IsWebSocketRelay(cfg.RelayAddr) {
-		normalized, err := normalizeRelayURL(cfg.RelayAddr)
-		if err != nil {
-			return config{}, err
-		}
-		cfg.RelayAddr = normalized
-	}
+	cfg.RelayAddr = normalized
 	return cfg, cfg.validate()
 }
 
 func defaultConfig() config {
 	return config{
-		RelayMode:  "websocket",
 		ListenAddr: defaultListenAddr,
 		RelayAddr:  defaultRelayURL,
 		Proxy:      "env",
@@ -868,12 +829,10 @@ func saveSettingsConfig(cfg config) error {
 		return fmt.Errorf("create settings directory: %w", err)
 	}
 	data, err := json.MarshalIndent(config{
-		RelayMode:  "websocket",
 		ListenAddr: cfg.ListenAddr,
 		RelayAddr:  cfg.RelayAddr,
 		Proxy:      cfg.Proxy,
 		RDPUser:    cfg.RDPUser,
-		Token:      cfg.Token,
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -894,9 +853,6 @@ func settingsPath() (string, error) {
 }
 
 func (c *config) merge(other config) {
-	if strings.TrimSpace(other.RelayMode) != "" {
-		c.RelayMode = other.RelayMode
-	}
 	if strings.TrimSpace(other.ListenAddr) != "" {
 		c.ListenAddr = other.ListenAddr
 	}
@@ -909,30 +865,17 @@ func (c *config) merge(other config) {
 	if strings.TrimSpace(other.RDPUser) != "" {
 		c.RDPUser = other.RDPUser
 	}
-	if strings.TrimSpace(other.Token) != "" {
-		c.Token = other.Token
-	}
 }
 
 func (c *config) applyDefaults() {
-	if c.RelayMode == "" {
-		if tunnel.IsWebSocketRelay(c.RelayAddr) {
-			c.RelayMode = "websocket"
-		} else {
-			c.RelayMode = "tls"
-		}
-	}
 	if c.ListenAddr == "" {
 		c.ListenAddr = defaultListenAddr
 	}
-	if c.RelayMode == "websocket" && c.RelayAddr == "" {
+	if c.RelayAddr == "" {
 		c.RelayAddr = defaultRelayURL
 	}
-	if c.RelayMode == "websocket" && c.Proxy == "" {
+	if c.Proxy == "" {
 		c.Proxy = "env"
-	}
-	if c.ServerName == "" && c.RelayAddr != "" {
-		c.ServerName = tunnel.HostFromRelayAddress(c.RelayAddr)
 	}
 }
 
@@ -940,55 +883,21 @@ func (c config) validate() error {
 	if c.RelayAddr == "" {
 		return fmt.Errorf("relay URL is required")
 	}
-	if c.RelayMode != "tls" && c.RelayMode != "websocket" {
-		return fmt.Errorf("unsupported relay mode %q", c.RelayMode)
+	if !tunnel.IsWebSocketRelay(c.RelayAddr) {
+		return fmt.Errorf("relay URL must start with https:// or http://")
 	}
-	if c.RelayMode == "websocket" {
-		if _, err := url.ParseRequestURI(c.RelayAddr); err != nil {
-			return fmt.Errorf("relay URL is invalid: %w", err)
-		}
-		return nil
-	}
-	if c.CAFile == "" && c.CAPEM == "" {
-		return fmt.Errorf("ca_file or ca_pem is required")
-	}
-	if c.CertFile == "" && c.CertPEM == "" {
-		return fmt.Errorf("cert_file or cert_pem is required")
-	}
-	if c.KeyFile == "" && c.KeyPEM == "" {
-		return fmt.Errorf("key_file or key_pem is required")
-	}
-	if c.ServerName == "" {
-		return fmt.Errorf("server_name is required")
-	}
-	if c.Token == "" {
-		return fmt.Errorf("token is required")
+	if _, err := url.ParseRequestURI(c.RelayAddr); err != nil {
+		return fmt.Errorf("relay URL is invalid: %w", err)
 	}
 	return nil
 }
 
-func (c *config) resolvePaths(base string) {
-	c.CAFile = resolvePath(base, c.CAFile)
-	c.CertFile = resolvePath(base, c.CertFile)
-	c.KeyFile = resolvePath(base, c.KeyFile)
-}
-
-func (c config) tlsConfig() (*tls.Config, error) {
-	if c.CAPEM != "" || c.CertPEM != "" || c.KeyPEM != "" {
-		return tunnel.ClientTLSConfigFromPEM(c.CAPEM, c.CertPEM, c.KeyPEM, c.ServerName)
-	}
-	return tunnel.ClientTLSConfig(c.CAFile, c.CertFile, c.KeyFile, c.ServerName)
-}
-
 func run(ctx context.Context, cfg config, openMSTSC bool) error {
-	listener, cfg, usedFallback, err := listenLocalRDP(cfg)
+	listener, err := listenLocalRDP(cfg)
 	if err != nil {
 		return localListenError(cfg.ListenAddr, err)
 	}
 	defer listener.Close()
-	if usedFallback {
-		log.Printf("port 3389 was unavailable; using %s for the home-side RDP listener", cfg.ListenAddr)
-	}
 	log.Printf("client listening on %s; mstsc should target this address", listener.Addr())
 	if openMSTSC {
 		if err := launchMSTSC(cfg); err != nil {
@@ -1033,27 +942,7 @@ func handleLocalConn(ctx context.Context, cfg config, localConn net.Conn, remote
 }
 
 func dialRelay(ctx context.Context, cfg config) (net.Conn, error) {
-	if cfg.RelayMode == "websocket" || tunnel.IsWebSocketRelay(cfg.RelayAddr) {
-		return tunnel.DialWebSocketStream(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleClient, cfg.Token)
-	}
-	tlsConfig, err := cfg.tlsConfig()
-	if err != nil {
-		return nil, err
-	}
-	rawConn, err := tunnel.DialContext(ctx, cfg.RelayAddr, cfg.Proxy)
-	if err != nil {
-		return nil, err
-	}
-	tlsConn := tls.Client(rawConn, tlsConfig)
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		_ = rawConn.Close()
-		return nil, fmt.Errorf("TLS handshake: %w", err)
-	}
-	if err := tunnel.SendAuth(ctx, tlsConn, cfg.Token, tunnel.RoleClient); err != nil {
-		_ = tlsConn.Close()
-		return nil, err
-	}
-	return tlsConn, nil
+	return tunnel.DialWebSocketStream(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleClient, "")
 }
 
 func queryRelaySummary(ctx context.Context, cfg config) (relaySummary, error) {
@@ -1239,38 +1128,16 @@ func emptyAs(value, fallback string) string {
 	return value
 }
 
-func listenLocalRDP(cfg config) (net.Listener, config, bool, error) {
+func listenLocalRDP(cfg config) (net.Listener, error) {
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err == nil {
-		return listener, cfg, false, nil
+		return listener, nil
 	}
-	if !isLegacyDefaultListenAddr(cfg.ListenAddr) {
-		return nil, cfg, false, err
-	}
-
-	fallback := cfg
-	fallback.ListenAddr = defaultListenAddr
-	listener, fallbackErr := net.Listen("tcp", fallback.ListenAddr)
-	if fallbackErr == nil {
-		return listener, fallback, true, nil
-	}
-	return nil, cfg, false, fmt.Errorf("%w; fallback %s also failed: %v", err, fallback.ListenAddr, fallbackErr)
+	return nil, err
 }
 
 func localListenError(listenAddr string, err error) error {
-	message := fmt.Sprintf("listen %s: %v", listenAddr, err)
-	if isLegacyDefaultListenAddr(listenAddr) {
-		message += ". Port 3389 is Windows' normal Remote Desktop port and may already be in use or reserved on this PC. Set Local RDP address to 127.0.0.1:3390, then connect again."
-	}
-	return errors.New(message)
-}
-
-func isLegacyDefaultListenAddr(listenAddr string) bool {
-	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
-	if err != nil {
-		return strings.EqualFold(strings.TrimSpace(listenAddr), legacyDefaultListenAddr)
-	}
-	return port == "3389" && (host == "" || host == "127.0.0.1" || strings.EqualFold(host, "localhost"))
+	return fmt.Errorf("listen %s: %w", listenAddr, err)
 }
 
 func launchMSTSC(cfg config) error {
@@ -1417,13 +1284,6 @@ func shellExecute(verb, file, params, dir string) error {
 	paramsPtr, _ := windows.UTF16PtrFromString(params)
 	dirPtr, _ := windows.UTF16PtrFromString(dir)
 	return windows.ShellExecute(0, verbPtr, filePtr, paramsPtr, dirPtr, windows.SW_SHOWNORMAL)
-}
-
-func resolvePath(base, value string) string {
-	if value == "" || filepath.IsAbs(value) {
-		return value
-	}
-	return filepath.Clean(filepath.Join(base, value))
 }
 
 func windowsMessageBox(title, text string, style uint32) {

@@ -36,7 +36,7 @@ type app struct {
 	mw         *walk.MainWindow
 	installDir *walk.LineEdit
 	agentPath  *walk.LineEdit
-	relayURL   *walk.LineEdit
+	relayURL   *walk.TextEdit
 	status     *walk.Label
 	log        *walk.TextEdit
 }
@@ -94,8 +94,8 @@ func (a *app) run(smokeTest bool) error {
 					LineEdit{AssignTo: &a.agentPath, Text: agentPath, ColumnSpan: 1},
 					PushButton{Text: "Browse", OnClicked: a.browseAgentPath},
 
-					Label{Text: "Relay URL"},
-					LineEdit{AssignTo: &a.relayURL, Text: defaultRelayURL, ColumnSpan: 2},
+					Label{Text: "Relay URLs"},
+					TextEdit{AssignTo: &a.relayURL, Text: defaultRelayURL, VScroll: true, ColumnSpan: 2, MinSize: Size{Height: 62}},
 				},
 			},
 			GroupBox{
@@ -202,11 +202,11 @@ func (a *app) runSelfTest() {
 		exePath = opts.AgentPath
 	}
 	if exePath == "" || opts.RelayURL == "" {
-		a.showError(errors.New("select an agent executable and enter a relay URL"))
+		a.showError(errors.New("select an agent executable and enter at least one relay URL"))
 		return
 	}
 	go func() {
-		a.appendLog("Running self-test with relay URL: %s", opts.RelayURL)
+		a.appendLog("Running self-test with relay URL(s): %s", strings.Join(splitRelayURLs(opts.RelayURL), ", "))
 		a.appendLog("Agent executable: %s", exePath)
 		if usingInstalledExe && !sameFileOrContent(installedExePath, opts.AgentPath) {
 			a.appendLog("Installed agent.exe differs from the selected agent executable. Click Install / Update to copy the selected executable before testing it.")
@@ -320,7 +320,7 @@ func (a *app) options() actionOptions {
 	return actionOptions{
 		InstallDir: strings.TrimSpace(a.installDir.Text()),
 		AgentPath:  strings.TrimSpace(a.agentPath.Text()),
-		RelayURL:   strings.TrimSpace(a.relayURL.Text()),
+		RelayURL:   joinRelayURLs(splitRelayURLs(a.relayURL.Text())),
 	}
 }
 
@@ -532,7 +532,7 @@ func validateInstallInputs(opts actionOptions) error {
 		return errors.New("agent executable is required")
 	}
 	if opts.RelayURL == "" {
-		return errors.New("relay URL is required")
+		return errors.New("at least one relay URL is required")
 	}
 	if _, err := os.Stat(opts.AgentPath); err != nil {
 		return fmt.Errorf("agent executable is not readable: %w", err)
@@ -765,6 +765,37 @@ func joinWindowsArgs(args []string) string {
 		quoted = append(quoted, syscall.EscapeArg(arg))
 	}
 	return strings.Join(quoted, " ")
+}
+
+func splitRelayURLs(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\r' || r == '\n' || r == ',' || r == ';'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func joinRelayURLs(values []string) string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+	}
+	return strings.Join(out, ";")
 }
 
 func windowsMessageBox(title, text string, style uint32) {

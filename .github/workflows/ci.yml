@@ -29,20 +29,6 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: current
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -65,7 +51,3 @@ jobs:
       - name: Run Python relay tests
         shell: pwsh
         run: python -m pytest python-relay/tests
-
-      - name: Build Android home APK
-        shell: pwsh
-        run: .\build\build-android-home.ps1
