@@ -43,6 +43,7 @@ type config struct {
 	ListenAddr string `json:"listen_addr"`
 	RelayAddr  string `json:"relay_addr"`
 	Proxy      string `json:"proxy"`
+	RDPUser    string `json:"rdp_user,omitempty"`
 	CAFile     string `json:"ca_file,omitempty"`
 	CertFile   string `json:"cert_file,omitempty"`
 	KeyFile    string `json:"key_file,omitempty"`
@@ -60,6 +61,8 @@ type clientApp struct {
 	relayURL   *walk.LineEdit
 	listenAddr *walk.LineEdit
 	proxy      *walk.LineEdit
+	rdpUser    *walk.LineEdit
+	rdpPass    *walk.LineEdit
 
 	tunnelStatus *walk.Label
 	workStatus   *walk.Label
@@ -206,6 +209,10 @@ func (a *clientApp) run(smokeTest bool) error {
 					LineEdit{AssignTo: &a.listenAddr, Text: a.cfg.ListenAddr, CueBanner: defaultListenAddr},
 					Label{Text: "Proxy"},
 					LineEdit{AssignTo: &a.proxy, Text: a.cfg.Proxy, CueBanner: "env, direct, or http://host:port"},
+					Label{Text: "RDP username"},
+					LineEdit{AssignTo: &a.rdpUser, Text: a.cfg.RDPUser, CueBanner: `DOMAIN\user or user@example.com`},
+					Label{Text: "RDP password"},
+					LineEdit{AssignTo: &a.rdpPass, PasswordMode: true, CueBanner: "not stored by TunnelDesktop"},
 				},
 			},
 			Composite{
@@ -215,6 +222,8 @@ func (a *clientApp) run(smokeTest bool) error {
 					PushButton{AssignTo: &a.openRDPButton, Text: "Open Remote Desktop", MinSize: Size{Width: 150, Height: 34}, OnClicked: a.openRemoteDesktop},
 					PushButton{Text: "Save", MinSize: Size{Width: 88, Height: 34}, OnClicked: func() { a.saveFromUI(true) }},
 					PushButton{Text: "Copy RDP Address", MinSize: Size{Width: 130, Height: 34}, OnClicked: a.copyRDPAddress},
+					PushButton{Text: "Save RDP Login", MinSize: Size{Width: 120, Height: 34}, OnClicked: a.saveRDPCredentials},
+					PushButton{Text: "Forget RDP Login", MinSize: Size{Width: 120, Height: 34}, OnClicked: a.forgetRDPCredentials},
 					PushButton{Text: "Relay Dashboard", MinSize: Size{Width: 130, Height: 34}, OnClicked: a.openDashboard},
 					PushButton{Text: "Refresh", MinSize: Size{Width: 90, Height: 34}, OnClicked: a.refreshRelayStatusAsync},
 				},
@@ -413,6 +422,7 @@ func (a *clientApp) configFromUI() (config, error) {
 		RelayAddr:  strings.TrimSpace(a.relayURL.Text()),
 		ListenAddr: strings.TrimSpace(a.listenAddr.Text()),
 		Proxy:      strings.TrimSpace(a.proxy.Text()),
+		RDPUser:    strings.TrimSpace(a.rdpUser.Text()),
 	}
 	cfg.applyDefaults()
 	if normalized, err := normalizeRelayURL(cfg.RelayAddr); err != nil {
@@ -437,6 +447,7 @@ func (a *clientApp) setConfig(cfg config) {
 		_ = a.relayURL.SetText(cfg.RelayAddr)
 		_ = a.listenAddr.SetText(cfg.ListenAddr)
 		_ = a.proxy.SetText(cfg.Proxy)
+		_ = a.rdpUser.SetText(cfg.RDPUser)
 	})
 }
 
@@ -468,7 +479,9 @@ func (a *clientApp) startTunnel(openRDP bool) error {
 		cancel()
 		_ = listener.Close()
 		if openRDP {
-			launchMSTSC(cfg.ListenAddr)
+			if err := launchMSTSC(cfg); err != nil {
+				a.appendLog("Could not open Remote Desktop: %v", err)
+			}
 		}
 		return nil
 	}
@@ -495,7 +508,9 @@ func (a *clientApp) startTunnel(openRDP bool) error {
 	}()
 
 	if openRDP {
-		launchMSTSC(cfg.ListenAddr)
+		if err := launchMSTSC(cfg); err != nil {
+			a.appendLog("Could not open Remote Desktop: %v", err)
+		}
 	}
 	return nil
 }
@@ -583,7 +598,9 @@ func (a *clientApp) openRemoteDesktop() {
 		}
 		cfg = a.currentConfig()
 	}
-	launchMSTSC(cfg.ListenAddr)
+	if err := launchMSTSC(cfg); err != nil {
+		a.showError(err)
+	}
 }
 
 func (a *clientApp) copyRDPAddress() {
@@ -593,6 +610,46 @@ func (a *clientApp) copyRDPAddress() {
 		return
 	}
 	a.appendLog("Copied RDP address: %s", mstscTarget(cfg.ListenAddr))
+}
+
+func (a *clientApp) saveRDPCredentials() {
+	if err := a.saveFromUI(false); err != nil {
+		a.showError(err)
+		return
+	}
+	cfg := a.currentConfig()
+	user := strings.TrimSpace(a.rdpUser.Text())
+	pass := a.rdpPass.Text()
+	if user == "" {
+		a.showError(errors.New("RDP username is required"))
+		return
+	}
+	if pass == "" {
+		a.showError(errors.New("RDP password is required"))
+		return
+	}
+	if err := saveRDPCredentialTargets(cfg.ListenAddr, user, pass); err != nil {
+		a.showError(err)
+		return
+	}
+	if _, err := writeMSTSCRDPFile(cfg); err != nil {
+		a.appendLog("Saved RDP credentials, but could not update the Remote Desktop profile: %v", err)
+	}
+	_ = a.rdpPass.SetText("")
+	a.appendLog("Saved RDP credentials in Windows Credential Manager for %s. Remote Desktop will use them automatically when Windows policy allows it.", mstscTarget(cfg.ListenAddr))
+}
+
+func (a *clientApp) forgetRDPCredentials() {
+	cfg, err := a.configFromUI()
+	if err != nil {
+		a.showError(err)
+		return
+	}
+	if err := deleteRDPCredentialTargets(cfg.ListenAddr); err != nil {
+		a.showError(err)
+		return
+	}
+	a.appendLog("Removed saved RDP credentials for %s.", mstscTarget(cfg.ListenAddr))
 }
 
 func (a *clientApp) openDashboard() {
@@ -815,6 +872,7 @@ func saveSettingsConfig(cfg config) error {
 		ListenAddr: cfg.ListenAddr,
 		RelayAddr:  cfg.RelayAddr,
 		Proxy:      cfg.Proxy,
+		RDPUser:    cfg.RDPUser,
 		Token:      cfg.Token,
 	}, "", "  ")
 	if err != nil {
@@ -847,6 +905,9 @@ func (c *config) merge(other config) {
 	}
 	if strings.TrimSpace(other.Proxy) != "" {
 		c.Proxy = other.Proxy
+	}
+	if strings.TrimSpace(other.RDPUser) != "" {
+		c.RDPUser = other.RDPUser
 	}
 	if strings.TrimSpace(other.Token) != "" {
 		c.Token = other.Token
@@ -930,7 +991,9 @@ func run(ctx context.Context, cfg config, openMSTSC bool) error {
 	}
 	log.Printf("client listening on %s; mstsc should target this address", listener.Addr())
 	if openMSTSC {
-		launchMSTSC(cfg.ListenAddr)
+		if err := launchMSTSC(cfg); err != nil {
+			log.Printf("open Remote Desktop: %v", err)
+		}
 	}
 	return serveListener(ctx, cfg, listener, func(string) {}, func(string) {}, func(format string, args ...any) {
 		log.Printf(format, args...)
@@ -1210,8 +1273,60 @@ func isLegacyDefaultListenAddr(listenAddr string) bool {
 	return port == "3389" && (host == "" || host == "127.0.0.1" || strings.EqualFold(host, "localhost"))
 }
 
-func launchMSTSC(listenAddr string) {
-	_ = exec.Command("mstsc.exe", "/v:"+mstscTarget(listenAddr)).Start()
+func launchMSTSC(cfg config) error {
+	if profile, err := writeMSTSCRDPFile(cfg); err == nil {
+		return exec.Command("mstsc.exe", profile).Start()
+	}
+	return exec.Command("mstsc.exe", "/v:"+mstscTarget(cfg.ListenAddr)).Start()
+}
+
+func writeMSTSCRDPFile(cfg config) (string, error) {
+	path, err := mstscProfilePath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return "", fmt.Errorf("create RDP profile directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(mstscProfileContent(cfg)), 0600); err != nil {
+		return "", fmt.Errorf("write RDP profile: %w", err)
+	}
+	return path, nil
+}
+
+func mstscProfilePath() (string, error) {
+	settings, err := settingsPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(settings), "home-client.rdp"), nil
+}
+
+func mstscProfileContent(cfg config) string {
+	target := sanitizeRDPValue(mstscTarget(cfg.ListenAddr))
+	lines := []string{
+		"screen mode id:i:2",
+		"use multimon:i:0",
+		"session bpp:i:32",
+		"full address:s:" + target,
+		"prompt for credentials:i:0",
+		"promptcredentialonce:i:1",
+		"authentication level:i:2",
+		"enablecredsspsupport:i:1",
+		"negotiate security layer:i:1",
+		"redirectclipboard:i:1",
+		"redirectprinters:i:0",
+	}
+	if user := strings.TrimSpace(cfg.RDPUser); user != "" {
+		lines = append(lines, "username:s:"+sanitizeRDPValue(user))
+	}
+	return strings.Join(lines, "\r\n") + "\r\n"
+}
+
+func sanitizeRDPValue(value string) string {
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return strings.TrimSpace(value)
 }
 
 func mstscTarget(listenAddr string) string {
@@ -1227,6 +1342,69 @@ func mstscTarget(listenAddr string) string {
 		return "[" + host + "]:" + port
 	}
 	return net.JoinHostPort(host, port)
+}
+
+func saveRDPCredentialTargets(listenAddr, user, pass string) error {
+	for _, target := range rdpCredentialTargets(listenAddr) {
+		out, err := exec.Command("cmdkey.exe", "/generic:"+target, "/user:"+user, "/pass:"+pass).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("save RDP credentials with cmdkey for %s: %w: %s", target, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+func deleteRDPCredentialTargets(listenAddr string) error {
+	var failures []string
+	for _, target := range rdpCredentialTargets(listenAddr) {
+		out, err := exec.Command("cmdkey.exe", "/delete:"+target).CombinedOutput()
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s", target, strings.TrimSpace(string(out))))
+		}
+	}
+	if len(failures) == len(rdpCredentialTargets(listenAddr)) {
+		return fmt.Errorf("cmdkey did not remove any matching RDP credentials: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func rdpCredentialTargets(listenAddr string) []string {
+	target := mstscTarget(listenAddr)
+	targets := []string{"TERMSRV/" + target}
+	if host, port, err := net.SplitHostPort(target); err == nil {
+		host = strings.Trim(host, "[]")
+		if host != "" && host != target {
+			targets = append(targets, "TERMSRV/"+host)
+		}
+		if isLoopbackHost(host) {
+			targets = append(targets, "TERMSRV/localhost")
+			if port != "" {
+				targets = append(targets, "TERMSRV/"+net.JoinHostPort("localhost", port))
+			}
+		}
+	}
+	return uniqueStrings(targets)
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func uniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func shellOpen(path string) error {

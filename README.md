@@ -184,10 +184,10 @@ Install the debug-signed APK:
 dist\android\tunneldesktop-home-android-debug.apk
 ```
 
-Open TunnelDesktop Home, enter the same relay room URL as the work agent, keep the local RDP port at `3390`, and start the tunnel. In an Android RDP client, connect to:
+Open TunnelDesktop Home, enter the same relay room URL as the work agent, keep the local RDP port at `3389`, and start the tunnel. Fresh installs use `3389` by default, and upgrades from the old app default migrate `3390` to `3389`. In an Android RDP client, connect to:
 
 ```text
-127.0.0.1:3390
+127.0.0.1:3389
 ```
 
 The Android app keeps the tunnel alive through a foreground service while you switch to the RDP client. It also maintains the same `home-agent` presence socket used by the relay dashboard.
@@ -285,6 +285,7 @@ It:
 
 - A polished control panel with relay room URL, local RDP address, proxy mode, status tiles, room details, and activity log.
 - A notification-area icon with open, connect, stop, Remote Desktop, and quit actions.
+- Windows Credential Manager integration for saved RDP login credentials.
 - Persistent home-app presence on the relay dashboard.
 - A loopback RDP listener, normally `127.0.0.1:3390`.
 - Automatic Remote Desktop launch when the user clicks `Connect`.
@@ -297,7 +298,7 @@ It provides:
 
 - A native Android control panel with relay room URL, local RDP port, status tiles, activity log, copy, dashboard, and RDP launch actions.
 - A foreground service so the tunnel can keep running while another app is active.
-- A loopback RDP listener, normally `127.0.0.1:3390`.
+- A loopback RDP listener, normally `127.0.0.1:3389`.
 - One outbound `client` WebSocket per local RDP connection.
 - A persistent `home-agent` presence WebSocket while the service is running.
 
@@ -419,6 +420,12 @@ Check:
 - The configured Windows account is allowed to log in remotely.
 - The home app local listen port is not already in use. If `127.0.0.1:3389` fails on the home PC, use `127.0.0.1:3390`.
 
+### Saved RDP Login
+
+The Windows home app can save RDP credentials through Windows Credential Manager. Enter the work Windows username and password, then click `Save RDP Login`. TunnelDesktop calls `cmdkey.exe` for the local RDP target, writes a password-free `%APPDATA%\TunnelDesktop\home-client.rdp` launch profile, and clears the password field after saving. The password is not written to `%APPDATA%\TunnelDesktop\home-client.json` or the `.rdp` profile.
+
+`Open Remote Desktop` and `Connect` launch MSTSC with that `.rdp` profile, so saved credentials are used automatically when Windows allows them. Remote Desktop may still prompt if Windows policy blocks saved credential delegation. In that case, allow saved credentials for the `TERMSRV/*` target through Windows policy, or continue signing in manually.
+
 ### Azure Relay Status
 
 Open:
@@ -488,4 +495,4 @@ This repo currently contains:
 - Multiple App Service instances are not supported unless sticky routing or shared broker state is added.
 - The Go work agent supports direct, environment, and basic HTTP proxy URLs. NTLM proxy authentication is not implemented in the service.
 - The home app is a Windows RDP launcher and tunnel endpoint, not a full RDP client.
-- The Android home app is also a tunnel endpoint, not a full RDP client; use a separate Android RDP client against `127.0.0.1:3390`.
+- The Android home app is also a tunnel endpoint, not a full RDP client; use a separate Android RDP client against `127.0.0.1:3389`.

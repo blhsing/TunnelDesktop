@@ -7,7 +7,6 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -50,10 +49,6 @@ public class TunnelService extends Service {
 
     private static final String CHANNEL_ID = "tunneldesktop_home";
     private static final int NOTIFICATION_ID = 7310;
-    private static final int DEFAULT_LOCAL_PORT = 3390;
-    private static final String PREFS = "tunneldesktop_home";
-    private static final String PREF_RELAY_URL = "relay_url";
-    private static final String PREF_LOCAL_PORT = "local_port";
     private static final SimpleDateFormat TIME_FORMAT = new SimpleDateFormat("HH:mm:ss", Locale.ROOT);
     private static final Object STATE_LOCK = new Object();
     private static State currentState = State.initial();
@@ -68,7 +63,7 @@ public class TunnelService extends Service {
     private WebSocket presenceSocket;
     private volatile boolean running;
     private volatile String relayUrl = RelayUrls.DEFAULT_RELAY_URL;
-    private volatile int localPort = DEFAULT_LOCAL_PORT;
+    private volatile int localPort = HomePrefs.DEFAULT_LOCAL_PORT;
     private volatile int activeConnections;
     private volatile int totalConnections;
 
@@ -98,13 +93,12 @@ public class TunnelService extends Service {
             return START_NOT_STICKY;
         }
 
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         String requestedRelay = intent != null && intent.hasExtra(EXTRA_RELAY_URL)
                 ? intent.getStringExtra(EXTRA_RELAY_URL)
-                : prefs.getString(PREF_RELAY_URL, relayUrl);
+                : HomePrefs.loadRelayUrl(this);
         int requestedPort = intent != null && intent.hasExtra(EXTRA_LOCAL_PORT)
-                ? intent.getIntExtra(EXTRA_LOCAL_PORT, DEFAULT_LOCAL_PORT)
-                : prefs.getInt(PREF_LOCAL_PORT, DEFAULT_LOCAL_PORT);
+                ? intent.getIntExtra(EXTRA_LOCAL_PORT, HomePrefs.DEFAULT_LOCAL_PORT)
+                : HomePrefs.loadLocalPort(this);
         startForeground(NOTIFICATION_ID, buildNotification());
         startTunnel(requestedRelay, requestedPort);
         return START_STICKY;
@@ -389,7 +383,7 @@ public class TunnelService extends Service {
     }
 
     private static int sanitizePort(int port) {
-        return port > 0 && port < 65536 ? port : DEFAULT_LOCAL_PORT;
+        return HomePrefs.sanitizePort(port);
     }
 
     private static String trimLog(String log) {
@@ -447,7 +441,7 @@ public class TunnelService extends Service {
             State state = new State();
             state.running = false;
             state.relayUrl = RelayUrls.DEFAULT_RELAY_URL;
-            state.rdpAddress = RelayUrls.rdpAddress(DEFAULT_LOCAL_PORT);
+            state.rdpAddress = RelayUrls.rdpAddress(HomePrefs.DEFAULT_LOCAL_PORT);
             state.tunnelStatus = "Stopped";
             state.homeStatus = "Offline";
             state.workStatus = "Unknown";

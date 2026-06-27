@@ -8,7 +8,6 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -32,11 +31,6 @@ import java.net.URISyntaxException;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
-    private static final String PREFS = "tunneldesktop_home";
-    private static final String PREF_RELAY_URL = "relay_url";
-    private static final String PREF_LOCAL_PORT = "local_port";
-    private static final int DEFAULT_LOCAL_PORT = 3390;
-
     private final BroadcastReceiver stateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -54,7 +48,7 @@ public class MainActivity extends Activity {
     private TextView messageView;
     private TextView logView;
     private Button startButton;
-    private String latestRdpAddress = "127.0.0.1:3390";
+    private String latestRdpAddress = RelayUrls.rdpAddress(HomePrefs.DEFAULT_LOCAL_PORT);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -128,7 +122,7 @@ public class MainActivity extends Activity {
         localPortField.setInputType(InputType.TYPE_CLASS_NUMBER);
         configCard.addView(localPortField, matchWrap());
 
-        rdpAddress = label("127.0.0.1:3390", 20, "#1F2933", true);
+        rdpAddress = label(RelayUrls.rdpAddress(HomePrefs.DEFAULT_LOCAL_PORT), 20, "#1F2933", true);
         rdpAddress.setPadding(0, dp(10), 0, 0);
         configCard.addView(rdpAddress);
 
@@ -192,17 +186,12 @@ public class MainActivity extends Activity {
     }
 
     private void loadPreferences() {
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        relayUrlField.setText(prefs.getString(PREF_RELAY_URL, RelayUrls.DEFAULT_RELAY_URL));
-        localPortField.setText(String.valueOf(prefs.getInt(PREF_LOCAL_PORT, DEFAULT_LOCAL_PORT)));
+        relayUrlField.setText(HomePrefs.loadRelayUrl(this));
+        localPortField.setText(String.valueOf(HomePrefs.loadLocalPort(this)));
     }
 
     private void savePreferences(String relayUrl, int port) {
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-                .edit()
-                .putString(PREF_RELAY_URL, relayUrl)
-                .putInt(PREF_LOCAL_PORT, port)
-                .apply();
+        HomePrefs.save(this, relayUrl, port);
     }
 
     private void toggleTunnel() {
