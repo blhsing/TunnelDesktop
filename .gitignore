@@ -5,3 +5,6 @@ obj/
 *.syso
 __pycache__/
 *.pyc
+android-home/.gradle/
+android-home/build/
+android-home/app/build/

@@ -1,0 +1,574 @@
+package com.blhsing.tunneldesktop.home;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.IBinder;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.WebSocket;
+import okhttp3.WebSocketListener;
+import okio.ByteString;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+public class TunnelService extends Service {
+    static final String ACTION_START = "com.blhsing.tunneldesktop.home.START";
+    static final String ACTION_STOP = "com.blhsing.tunneldesktop.home.STOP";
+    static final String ACTION_STATE = "com.blhsing.tunneldesktop.home.STATE";
+    static final String EXTRA_RELAY_URL = "relay_url";
+    static final String EXTRA_LOCAL_PORT = "local_port";
+
+    private static final String CHANNEL_ID = "tunneldesktop_home";
+    private static final int NOTIFICATION_ID = 7310;
+    private static final int DEFAULT_LOCAL_PORT = 3390;
+    private static final String PREFS = "tunneldesktop_home";
+    private static final String PREF_RELAY_URL = "relay_url";
+    private static final String PREF_LOCAL_PORT = "local_port";
+    private static final SimpleDateFormat TIME_FORMAT = new SimpleDateFormat("HH:mm:ss", Locale.ROOT);
+    private static final Object STATE_LOCK = new Object();
+    private static State currentState = State.initial();
+
+    private final Object lock = new Object();
+    private final Set<BridgeSession> sessions = ConcurrentHashMap.newKeySet();
+    private OkHttpClient httpClient;
+    private ServerSocket serverSocket;
+    private Thread acceptThread;
+    private Thread presenceThread;
+    private Thread statusThread;
+    private WebSocket presenceSocket;
+    private volatile boolean running;
+    private volatile String relayUrl = RelayUrls.DEFAULT_RELAY_URL;
+    private volatile int localPort = DEFAULT_LOCAL_PORT;
+    private volatile int activeConnections;
+    private volatile int totalConnections;
+
+    public static State snapshot() {
+        synchronized (STATE_LOCK) {
+            return currentState.copy();
+        }
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        httpClient = new OkHttpClient.Builder()
+                .pingInterval(25, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .build();
+        createNotificationChannel();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = intent == null ? ACTION_START : intent.getAction();
+        if (ACTION_STOP.equals(action)) {
+            stopTunnel();
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String requestedRelay = intent != null && intent.hasExtra(EXTRA_RELAY_URL)
+                ? intent.getStringExtra(EXTRA_RELAY_URL)
+                : prefs.getString(PREF_RELAY_URL, relayUrl);
+        int requestedPort = intent != null && intent.hasExtra(EXTRA_LOCAL_PORT)
+                ? intent.getIntExtra(EXTRA_LOCAL_PORT, DEFAULT_LOCAL_PORT)
+                : prefs.getInt(PREF_LOCAL_PORT, DEFAULT_LOCAL_PORT);
+        startForeground(NOTIFICATION_ID, buildNotification());
+        startTunnel(requestedRelay, requestedPort);
+        return START_STICKY;
+    }
+
+    @Override
+    public void onDestroy() {
+        stopTunnel();
+        if (httpClient != null) {
+            httpClient.dispatcher().cancelAll();
+        }
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+
+    private void startTunnel(String requestedRelay, int requestedPort) {
+        synchronized (lock) {
+            stopTunnelLocked();
+            try {
+                relayUrl = RelayUrls.normalizeRelayUrl(requestedRelay);
+                localPort = sanitizePort(requestedPort);
+                serverSocket = new ServerSocket();
+                serverSocket.setReuseAddress(true);
+                serverSocket.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), localPort));
+                running = true;
+                activeConnections = 0;
+                totalConnections = 0;
+                updateState("Running", "Connecting", "Checking", null);
+                append("Listening on " + RelayUrls.rdpAddress(localPort) + ".");
+                startAcceptLoop();
+                startPresenceLoop();
+                startStatusLoop();
+            } catch (Exception ex) {
+                running = false;
+                updateState("Stopped", "Offline", "Check relay", "Start failed: " + ex.getMessage());
+                append("Start failed: " + ex.getMessage());
+                stopTunnelLocked();
+            }
+        }
+    }
+
+    private void stopTunnel() {
+        synchronized (lock) {
+            stopTunnelLocked();
+        }
+        updateState("Stopped", "Offline", "Unknown", null);
+        append("Tunnel stopped.");
+    }
+
+    private void stopTunnelLocked() {
+        running = false;
+        closePresenceSocket();
+        closeQuietly(serverSocket);
+        serverSocket = null;
+        for (BridgeSession session : sessions) {
+            session.close();
+        }
+        sessions.clear();
+        activeConnections = 0;
+    }
+
+    private void startAcceptLoop() {
+        acceptThread = new Thread(() -> {
+            while (running) {
+                try {
+                    Socket local = serverSocket.accept();
+                    local.setTcpNoDelay(true);
+                    BridgeSession session = new BridgeSession(local);
+                    sessions.add(session);
+                    new Thread(session, "TunnelDesktop-Android-Bridge").start();
+                } catch (IOException ex) {
+                    if (running) {
+                        append("Local listener stopped: " + ex.getMessage());
+                    }
+                    return;
+                }
+            }
+        }, "TunnelDesktop-Android-Accept");
+        acceptThread.start();
+    }
+
+    private void startPresenceLoop() {
+        presenceThread = new Thread(() -> {
+            while (running) {
+                CountDownLatch closed = new CountDownLatch(1);
+                try {
+                    Request request = webSocketRequest("home-agent");
+                    WebSocket socket = httpClient.newWebSocket(request, new WebSocketListener() {
+                        @Override
+                        public void onOpen(WebSocket webSocket, Response response) {
+                            presenceSocket = webSocket;
+                            updateState(null, "Online", null, null);
+                            append("Home status connected.");
+                        }
+
+                        @Override
+                        public void onClosed(WebSocket webSocket, int code, String reason) {
+                            closed.countDown();
+                        }
+
+                        @Override
+                        public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                            if (running) {
+                                updateState(null, "Reconnecting", null, "Home status: " + t.getMessage());
+                            }
+                            closed.countDown();
+                        }
+                    });
+                    presenceSocket = socket;
+                    closed.await();
+                } catch (Exception ex) {
+                    if (running) {
+                        updateState(null, "Reconnecting", null, "Home status: " + ex.getMessage());
+                    }
+                } finally {
+                    closePresenceSocket();
+                }
+                sleepQuietly(3000);
+            }
+        }, "TunnelDesktop-Android-Presence");
+        presenceThread.start();
+    }
+
+    private void startStatusLoop() {
+        statusThread = new Thread(() -> {
+            while (running) {
+                refreshRelayStatus();
+                sleepQuietly(4000);
+            }
+        }, "TunnelDesktop-Android-Status");
+        statusThread.start();
+    }
+
+    private void refreshRelayStatus() {
+        String statusUrl;
+        try {
+            statusUrl = RelayUrls.statusUrl(relayUrl);
+        } catch (URISyntaxException ex) {
+            updateState(null, null, "Invalid URL", ex.getMessage());
+            return;
+        }
+
+        Request request = new Request.Builder().url(statusUrl).get().build();
+        httpClient.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                if (running) {
+                    updateState(null, null, "Check relay", "Relay status: " + e.getMessage());
+                }
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                try (Response ignored = response) {
+                    if (!response.isSuccessful() || response.body() == null) {
+                        updateState(null, null, "Check relay", "Relay status: HTTP " + response.code());
+                        return;
+                    }
+                    JSONObject root = new JSONObject(response.body().string());
+                    JSONArray rooms = root.optJSONArray("rooms");
+                    int waiting = 0;
+                    int active = 0;
+                    if (rooms != null) {
+                        for (int i = 0; i < rooms.length(); i++) {
+                            JSONObject room = rooms.getJSONObject(i);
+                            waiting += room.optInt("waiting_agents", 0);
+                            active += room.optInt("active_pairs", 0);
+                        }
+                    }
+                    boolean online = waiting + active > 0;
+                    String detail = waiting + " waiting work sockets, " + active + " active streams.";
+                    updateState(null, null, online ? "Connected" : "Waiting", detail);
+                } catch (Exception ex) {
+                    updateState(null, null, "Check relay", "Relay status: " + ex.getMessage());
+                }
+            }
+        });
+    }
+
+    private Request webSocketRequest(String role) throws URISyntaxException {
+        String endpoint = RelayUrls.webSocketEndpoint(relayUrl);
+        String token = RelayUrls.roomToken(relayUrl, "");
+        return new Request.Builder()
+                .url(endpoint)
+                .header("Authorization", "Bearer " + token)
+                .header("X-TunnelDesktop-Role", role)
+                .header("User-Agent", "TunnelDesktop-Android/0.1")
+                .build();
+    }
+
+    private void updateState(String tunnel, String home, String work, String message) {
+        synchronized (STATE_LOCK) {
+            State next = currentState.copy();
+            next.running = running;
+            next.relayUrl = relayUrl;
+            next.rdpAddress = RelayUrls.rdpAddress(localPort);
+            next.activeConnections = activeConnections;
+            next.totalConnections = totalConnections;
+            if (tunnel != null) {
+                next.tunnelStatus = tunnel;
+            }
+            if (home != null) {
+                next.homeStatus = home;
+            }
+            if (work != null) {
+                next.workStatus = work;
+            }
+            if (message != null && !message.isEmpty()) {
+                next.lastMessage = message;
+            }
+            currentState = next;
+        }
+        sendBroadcast(new Intent(ACTION_STATE).setPackage(getPackageName()));
+        updateNotification();
+    }
+
+    private void append(String message) {
+        synchronized (STATE_LOCK) {
+            State next = currentState.copy();
+            next.lastMessage = message;
+            next.log = now() + "  " + message + "\n" + trimLog(next.log);
+            currentState = next;
+        }
+        sendBroadcast(new Intent(ACTION_STATE).setPackage(getPackageName()));
+        updateNotification();
+    }
+
+    private void updateNotification() {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) {
+            manager.notify(NOTIFICATION_ID, buildNotification());
+        }
+    }
+
+    private Notification buildNotification() {
+        Intent openIntent = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        State state = snapshot();
+        String title = state.running ? "TunnelDesktop Home is running" : "TunnelDesktop Home";
+        String text = state.running ? state.rdpAddress + " - " + state.workStatus : "Tunnel stopped";
+        Notification.Builder builder = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(this, CHANNEL_ID)
+                : new Notification.Builder(this);
+        return builder
+                .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setContentIntent(pendingIntent)
+                .setOngoing(state.running)
+                .build();
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < 26) {
+            return;
+        }
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "TunnelDesktop Home",
+                NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription("TunnelDesktop foreground tunnel status");
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) {
+            manager.createNotificationChannel(channel);
+        }
+    }
+
+    private void closePresenceSocket() {
+        WebSocket socket = presenceSocket;
+        presenceSocket = null;
+        if (socket != null) {
+            socket.close(1000, "stopped");
+        }
+    }
+
+    private static int sanitizePort(int port) {
+        return port > 0 && port < 65536 ? port : DEFAULT_LOCAL_PORT;
+    }
+
+    private static String trimLog(String log) {
+        if (log == null) {
+            return "";
+        }
+        return log.length() <= 6000 ? log : log.substring(0, 6000);
+    }
+
+    private static String now() {
+        synchronized (TIME_FORMAT) {
+            return TIME_FORMAT.format(new Date());
+        }
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void closeQuietly(ServerSocket socket) {
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private static void closeQuietly(Socket socket) {
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    static final class State {
+        boolean running;
+        String relayUrl;
+        String rdpAddress;
+        String tunnelStatus;
+        String homeStatus;
+        String workStatus;
+        String lastMessage;
+        String log;
+        int activeConnections;
+        int totalConnections;
+
+        static State initial() {
+            State state = new State();
+            state.running = false;
+            state.relayUrl = RelayUrls.DEFAULT_RELAY_URL;
+            state.rdpAddress = RelayUrls.rdpAddress(DEFAULT_LOCAL_PORT);
+            state.tunnelStatus = "Stopped";
+            state.homeStatus = "Offline";
+            state.workStatus = "Unknown";
+            state.lastMessage = "Ready.";
+            state.log = "";
+            return state;
+        }
+
+        State copy() {
+            State state = new State();
+            state.running = running;
+            state.relayUrl = relayUrl;
+            state.rdpAddress = rdpAddress;
+            state.tunnelStatus = tunnelStatus;
+            state.homeStatus = homeStatus;
+            state.workStatus = workStatus;
+            state.lastMessage = lastMessage;
+            state.log = log;
+            state.activeConnections = activeConnections;
+            state.totalConnections = totalConnections;
+            return state;
+        }
+    }
+
+    private final class BridgeSession extends WebSocketListener implements Runnable {
+        private final Socket localSocket;
+        private final CountDownLatch paired = new CountDownLatch(1);
+        private final AtomicBoolean closed = new AtomicBoolean(false);
+        private volatile WebSocket webSocket;
+        private volatile Throwable failure;
+
+        BridgeSession(Socket localSocket) {
+            this.localSocket = localSocket;
+        }
+
+        @Override
+        public void run() {
+            String remote = String.valueOf(localSocket.getRemoteSocketAddress());
+            activeConnections++;
+            totalConnections++;
+            updateState("Running", null, null, null);
+            append("RDP connection from " + remote + ".");
+            try {
+                webSocket = httpClient.newWebSocket(webSocketRequest("client"), this);
+                if (!paired.await(30, TimeUnit.SECONDS)) {
+                    throw new IOException("relay did not pair with a work agent");
+                }
+                if (failure != null) {
+                    throw new IOException("relay connection failed", failure);
+                }
+                pipeLocalToRelay();
+            } catch (Exception ex) {
+                if (!closed.get()) {
+                    append("RDP bridge failed: " + ex.getMessage());
+                }
+            } finally {
+                close();
+                append("RDP connection closed from " + remote + ".");
+            }
+        }
+
+        @Override
+        public void onMessage(WebSocket webSocket, String text) {
+            if ("start".equals(text.trim())) {
+                paired.countDown();
+            }
+        }
+
+        @Override
+        public void onMessage(WebSocket webSocket, ByteString bytes) {
+            try {
+                OutputStream output = localSocket.getOutputStream();
+                synchronized (output) {
+                    output.write(bytes.toByteArray());
+                    output.flush();
+                }
+            } catch (IOException ex) {
+                failure = ex;
+                close();
+            }
+        }
+
+        @Override
+        public void onClosed(WebSocket webSocket, int code, String reason) {
+            close();
+        }
+
+        @Override
+        public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+            failure = t;
+            paired.countDown();
+            close();
+        }
+
+        void close() {
+            if (!closed.compareAndSet(false, true)) {
+                return;
+            }
+            WebSocket socket = webSocket;
+            if (socket != null) {
+                socket.close(1000, "closed");
+            }
+            closeQuietly(localSocket);
+            sessions.remove(this);
+            activeConnections = Math.max(0, activeConnections - 1);
+            updateState("Running", null, null, null);
+        }
+
+        private void pipeLocalToRelay() throws IOException {
+            InputStream input = localSocket.getInputStream();
+            byte[] buffer = new byte[16 * 1024];
+            int read;
+            while (!closed.get() && (read = input.read(buffer)) >= 0) {
+                WebSocket socket = webSocket;
+                if (socket == null || !socket.send(ByteString.of(buffer, 0, read))) {
+                    throw new IOException("relay WebSocket send failed");
+                }
+                while (!closed.get() && socket.queueSize() > 4L * 1024L * 1024L) {
+                    sleepQuietly(10);
+                }
+            }
+        }
+    }
+}

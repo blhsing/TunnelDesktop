@@ -1,0 +1,137 @@
+package com.blhsing.tunneldesktop.home;
+
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Locale;
+
+final class RelayUrls {
+    static final String DEFAULT_RELAY_URL = "https://test-officialwebsite.azurewebsites.net/relay/workdesk";
+
+    private RelayUrls() {
+    }
+
+    static String normalizeRelayUrl(String value) throws URISyntaxException {
+        String raw = value == null ? "" : value.trim();
+        if (raw.isEmpty()) {
+            raw = DEFAULT_RELAY_URL;
+        }
+        URI uri = new URI(raw);
+        String scheme = lower(uri.getScheme());
+        if ("wss".equals(scheme)) {
+            scheme = "https";
+        } else if ("ws".equals(scheme)) {
+            scheme = "http";
+        } else if (!"https".equals(scheme) && !"http".equals(scheme)) {
+            throw new URISyntaxException(raw, "relay URL must start with https:// or http://");
+        }
+        if (uri.getHost() == null || uri.getHost().isEmpty()) {
+            throw new URISyntaxException(raw, "relay URL must include a host");
+        }
+        String path = stripTrailingSlash(emptyAs(uri.getRawPath(), "/relay"));
+        if (path.isEmpty()) {
+            path = "/relay";
+        }
+        if (path.endsWith("/ws")) {
+            path = path.substring(0, path.length() - 3);
+            if (path.isEmpty()) {
+                path = "/relay";
+            }
+        }
+        return new URI(scheme, uri.getUserInfo(), uri.getHost(), uri.getPort(), path, uri.getRawQuery(), null).toString();
+    }
+
+    static String webSocketEndpoint(String relayUrl) throws URISyntaxException {
+        URI uri = new URI(normalizeRelayUrl(relayUrl));
+        String scheme = "https".equals(lower(uri.getScheme())) ? "wss" : "ws";
+        String path = stripTrailingSlash(emptyAs(uri.getRawPath(), "/relay"));
+        if (path.isEmpty() || "/".equals(path)) {
+            path = "/relay/ws";
+        } else if (!path.endsWith("/ws") && !path.endsWith("/dashboard")) {
+            path = path + "/ws";
+        }
+        return new URI(scheme, uri.getUserInfo(), uri.getHost(), uri.getPort(), path, uri.getRawQuery(), null).toString();
+    }
+
+    static String dashboardUrl(String relayUrl) {
+        try {
+            return normalizeRelayUrl(relayUrl);
+        } catch (URISyntaxException ex) {
+            return DEFAULT_RELAY_URL;
+        }
+    }
+
+    static String statusUrl(String relayUrl) throws URISyntaxException {
+        URI uri = new URI(normalizeRelayUrl(relayUrl));
+        String room = roomToken(relayUrl, "");
+        String query = room.isEmpty() || "default".equals(room) ? null : "room=" + room;
+        return new URI(uri.getScheme(), uri.getUserInfo(), uri.getHost(), uri.getPort(), "/relay/status", query, null).toString();
+    }
+
+    static String roomToken(String relayUrl, String configuredToken) {
+        String token = configuredToken == null ? "" : configuredToken.trim();
+        if (!token.isEmpty()) {
+            return token;
+        }
+        try {
+            URI uri = new URI(relayUrl == null ? "" : relayUrl.trim());
+            String path = uri.getPath();
+            if (path != null) {
+                String[] parts = path.replaceAll("^/+|/+$", "").split("/");
+                if (parts.length >= 2 && "relay".equals(parts[0])) {
+                    String room = parts[1];
+                    if (!room.isEmpty()
+                            && !"ws".equals(room)
+                            && !"status".equals(room)
+                            && !"health".equals(room)
+                            && !"dashboard".equals(room)) {
+                        return room;
+                    }
+                }
+            }
+            String queryToken = queryValue(uri.getRawQuery(), "room");
+            if (!queryToken.isEmpty()) {
+                return queryToken;
+            }
+            queryToken = queryValue(uri.getRawQuery(), "token");
+            if (!queryToken.isEmpty()) {
+                return queryToken;
+            }
+        } catch (URISyntaxException ignored) {
+        }
+        return "default";
+    }
+
+    static String rdpAddress(int port) {
+        return "127.0.0.1:" + port;
+    }
+
+    private static String queryValue(String rawQuery, String key) {
+        if (rawQuery == null || rawQuery.isEmpty()) {
+            return "";
+        }
+        for (String pair : rawQuery.split("&")) {
+            int sep = pair.indexOf('=');
+            String name = sep >= 0 ? pair.substring(0, sep) : pair;
+            if (key.equals(name)) {
+                return sep >= 0 ? pair.substring(sep + 1).trim() : "";
+            }
+        }
+        return "";
+    }
+
+    private static String emptyAs(String value, String fallback) {
+        return value == null || value.isEmpty() ? fallback : value;
+    }
+
+    private static String stripTrailingSlash(String value) {
+        String out = value == null ? "" : value;
+        while (out.length() > 1 && out.endsWith("/")) {
+            out = out.substring(0, out.length() - 1);
+        }
+        return out;
+    }
+
+    private static String lower(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT);
+    }
+}
