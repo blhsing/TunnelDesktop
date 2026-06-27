@@ -1,10 +1,10 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$project = Join-Path $root 'android-home'
+$project = Join-Path $root 'home-agent/android'
 $dist = Join-Path $root 'dist/android'
 $apk = Join-Path $project 'app/build/outputs/apk/debug/app-debug.apk'
-$out = Join-Path $dist 'tunneldesktop-home-android-debug.apk'
+$out = Join-Path $dist 'deskferry-home-android-debug.apk'
 
 if (-not $env:ANDROID_HOME) {
     if (Test-Path -LiteralPath 'D:\Android\Sdk') {
@@ -56,5 +56,8 @@ if (-not (Test-Path -LiteralPath $apk)) {
     throw "missing Android APK: $apk"
 }
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
+Get-ChildItem -LiteralPath $dist -Filter 'tunneldesktop-home-android*.apk' -File -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item -LiteralPath $_.FullName -Force
+}
 Copy-Item -LiteralPath $apk -Destination $out -Force
 Write-Host "built $out"

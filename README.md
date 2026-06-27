@@ -1,6 +1,6 @@
-# TunnelDesktop
+# DeskFerry
 
-TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `python-relay/`. The work-side Windows service, Windows home app, and Android home app connect out to relay web services over WebSockets.
+DeskFerry is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `relay/python/`. The work-side Windows service and the Windows, macOS, and Android home agents connect out to relay web services over WebSockets.
 
 Home apps connect to one relay room URL at a time. The work agent can connect to one or more relay room URLs at the same time, as long as they use the same room name. For example:
 
@@ -11,7 +11,7 @@ http://217.142.228.117/relay/workdesk
 
 The room name is the path segment after `/relay/`. The first endpoint to use a room creates it in memory on that relay, and later endpoints join the same room by using the same URL.
 
-The Android app is a home-agent client like the Windows home app. It is not a phone-hosted relay service.
+The Android app is a home-agent client like the Windows and macOS home agents. It is not a phone-hosted relay service.
 
 ## Table Of Contents
 
@@ -21,14 +21,16 @@ The Android app is a home-agent client like the Windows home app. It is not a ph
   - [2. Deploy Python Relay On OCI](#2-deploy-python-relay-on-oci)
   - [3. Choose A Room URL](#3-choose-a-room-url)
   - [4. Install Work Agent](#4-install-work-agent)
-  - [5. Run Home App](#5-run-home-app)
-  - [6. Run Android Home App](#6-run-android-home-app)
+  - [5. Run Windows Home App](#5-run-windows-home-app)
+  - [6. Run macOS Home Agent](#6-run-macos-home-agent)
+  - [7. Run Android Home App](#7-run-android-home-app)
 - [Deliverables](#deliverables)
   - [Azure Relay Web Service](#azure-relay-web-service)
   - [Python Relay Web Service](#python-relay-web-service)
   - [Work Agent](#work-agent)
   - [Agent Configurator](#agent-configurator)
-  - [Home App](#home-app)
+  - [Windows Home App](#windows-home-app)
+  - [macOS Home Agent](#macos-home-agent)
   - [Android Home App](#android-home-app)
 - [Security Model](#security-model)
 - [Build Prerequisites](#build-prerequisites)
@@ -46,12 +48,12 @@ The Android app is a home-agent client like the Windows home app. It is not a ph
 ## How It Works
 
 ```text
-Home PC
-  mstsc -> 127.0.0.1:<home app port>
+Home PC, Mac, or Android device
+  RDP client -> 127.0.0.1:<home agent port>
         |
         v
-client.exe
-  friendly Windows control panel + tray icon
+DeskFerry home agent
+  Windows GUI, macOS CLI, or Android foreground service
   outbound WebSocket over HTTPS
         |
         v
@@ -67,7 +69,7 @@ agent.exe Windows service
 
 The relay groups sockets by room name. A waiting work-agent socket is paired with one home-client socket from the same room, then the relay copies binary WebSocket frames in both directions. The relay does not store credentials or generated client files.
 
-The home app also keeps a lightweight `home-agent` presence WebSocket open while it is running. That presence socket lets the Azure dashboard and the home control panel show whether the home side is online; RDP data still flows only when the home app starts a local listener and Remote Desktop connects to it.
+The home app also keeps a lightweight `home-agent` presence WebSocket open while it is running. That presence socket lets the relay dashboard and home control panels show whether the home side is online; RDP data still flows only when a home agent starts a local listener and an RDP client connects to it.
 
 The Android home app follows the same model. It runs a foreground service, listens on Android loopback, and lets a separate Android RDP client connect to `127.0.0.1:<port>` on the phone. The phone is not a relay and does not need inbound access from the internet.
 
@@ -81,7 +83,7 @@ Build the deployable zip:
 .\build\build-azure-relay.ps1
 ```
 
-Deploy `dist\azure-relay\tunneldesktop-azure-relay.zip` to the Azure App Service. Confirm WebSockets are enabled in App Service configuration.
+Deploy `dist\azure-relay\deskferry-azure-relay.zip` to the Azure App Service. Confirm WebSockets are enabled in App Service configuration.
 
 Dashboard and health endpoints:
 
@@ -100,23 +102,23 @@ The Python relay can also run on a small Linux VM. The current OCI deployment is
 http://217.142.228.117/relay/b
 ```
 
-It runs as the systemd service `tunneldesktop-relay.service` under `/opt/tunneldesktop/python-relay` and listens on public HTTP port `80`. The OCI security rules must allow inbound TCP `80`, and the VM firewall must allow the `http` service.
+It runs as the systemd service `deskferry-relay.service` under `/opt/deskferry/python-relay` and listens on public HTTP port `80`. The OCI security rules must allow inbound TCP `80`, and the VM firewall must allow the `http` service.
 
 Build the normal Python source zip and a Linux/Python 3.9 vendored zip:
 
 ```powershell
-python -m pip install -r python-relay\requirements-dev.txt
+python -m pip install -r relay\python\requirements-dev.txt
 .\build\build-python-relay.ps1
 ```
 
 Artifacts:
 
 ```text
-dist\python-relay\tunneldesktop-python-relay.zip
-dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip
+dist\python-relay\deskferry-python-relay.zip
+dist\python-relay\deskferry-python-relay-linux-cp39-vendored.zip
 ```
 
-The vendored zip is for Oracle Linux 9's system Python 3.9 and avoids running `pip` on a low-memory Always Free VM. Deploy by extracting the vendored zip to `/opt/tunneldesktop/python-relay`, setting `PYTHONPATH=/opt/tunneldesktop/python-relay/vendor`, and running:
+The vendored zip is for Oracle Linux 9's system Python 3.9 and avoids running `pip` on a low-memory Always Free VM. Deploy by extracting the vendored zip to `/opt/deskferry/python-relay`, setting `PYTHONPATH=/opt/deskferry/python-relay/vendor`, and running:
 
 ```text
 /usr/bin/python3 -m uvicorn app:app --host 0.0.0.0 --port 80 --proxy-headers
@@ -143,53 +145,68 @@ Use the same room name everywhere. The home app uses one relay URL. The work age
 Run the configurator:
 
 ```text
-agent-configurator-windows-amd64.exe
+deskferry-agent-configurator-windows-amd64.exe
 ```
 
-It defaults to `D:\TunnelDesktop\Agent` when `D:` exists. Select `agent-windows-amd64.exe`, enter one or more relay room URLs, then click `Install / Update`. The configurator copies the work agent as `agent.exe`, installs or updates the automatic `TunnelDesktopAgent` Windows service, configures SCM restart recovery, and starts the service.
+It defaults to `D:\DeskFerry\Agent` when `D:` exists. Select `deskferry-agent-windows-amd64.exe`, enter one or more relay room URLs, then click `Install / Update`. The configurator copies the work agent as `agent.exe`, installs or updates the automatic `DeskFerryAgent` Windows service, configures SCM restart recovery, and starts the service.
 
 Command-line install is also supported:
 
 ```powershell
-.\agent-windows-amd64.exe -install -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
-.\agent-windows-amd64.exe -install -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
+.\deskferry-agent-windows-amd64.exe -install -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+.\deskferry-agent-windows-amd64.exe -install -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
 ```
 
 Useful checks:
 
 ```powershell
-.\agent-windows-amd64.exe -status
-.\agent-windows-amd64.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
-.\agent-windows-amd64.exe -self-test -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
+.\deskferry-agent-windows-amd64.exe -status
+.\deskferry-agent-windows-amd64.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+.\deskferry-agent-windows-amd64.exe -self-test -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
 ```
 
 WebSocket mode uses standard proxy environment variables by default, such as `HTTP_PROXY` and `HTTPS_PROXY`. Use `-proxy http://proxy.example:8080` to force a proxy, or `-proxy direct` to bypass proxy discovery.
 
-### 5. Run Home App
+### 5. Run Windows Home App
 
 Start the Windows home app with the same room URL:
 
 ```powershell
-.\client-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+.\deskferry-home-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
 The app opens a friendly control panel and a notification-area icon. Click `Connect` to start the local RDP listener and open Remote Desktop. The default local listener is `127.0.0.1:3390`, avoiding Windows' normal local RDP port `3389`, and the app opens one outbound WebSocket to Azure for each local RDP session.
 
-The home app stores its room URL, local RDP address, and proxy mode in `%APPDATA%\TunnelDesktop\home-client.json`. Console debug mode is still available:
+The home app stores its room URL, local RDP address, and proxy mode in `%APPDATA%\DeskFerry\home-client.json`. Console debug mode is still available:
 
 ```powershell
-.\client-windows-amd64.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+.\deskferry-home-windows-amd64.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
-### 6. Run Android Home App
+### 6. Run macOS Home Agent
+
+Choose the binary for your Mac:
+
+```sh
+chmod +x ./deskferry-home-macos-arm64
+./deskferry-home-macos-arm64 -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk -open-rdp
+```
+
+Use `deskferry-home-macos-amd64` on Intel Macs. The macOS home agent runs in the foreground, listens on `127.0.0.1:3389` by default, keeps the relay dashboard presence socket connected, and opens an `.rdp` profile when `-open-rdp` is supplied. If your RDP app does not open automatically, connect it manually to:
+
+```text
+127.0.0.1:3389
+```
+
+### 7. Run Android Home App
 
 Install the debug-signed APK:
 
 ```text
-dist\android\tunneldesktop-home-android-debug.apk
+dist\android\deskferry-home-android-debug.apk
 ```
 
-Open TunnelDesktop Home, enter the same relay room URL as the work agent, keep the local RDP port at `3389`, and start the tunnel. In an Android RDP client, connect to:
+Open DeskFerry Home, enter the same relay room URL as the work agent, keep the local RDP port at `3389`, and start the tunnel. In an Android RDP client, connect to:
 
 ```text
 127.0.0.1:3389
@@ -201,7 +218,7 @@ The Android app keeps the tunnel alive through a foreground service while you sw
 
 ### Azure Relay Web Service
 
-`azure-relay/` is a .NET 8 minimal ASP.NET Core service. It exposes:
+`relay/azure-dotnet/` is a .NET 8 minimal ASP.NET Core service. It exposes:
 
 - `GET /relay/` for the live overview dashboard.
 - `GET /relay/{room}` for a room-scoped live dashboard.
@@ -212,22 +229,24 @@ The Android app keeps the tunnel alive through a foreground service while you sw
 WebSocket clients identify their role with:
 
 ```text
-X-TunnelDesktop-Role: agent | client | home-agent | probe | dashboard
+X-DeskFerry-Role: agent | client | home-agent | probe | dashboard
 ```
+
+Relays also accept the former `X-TunnelDesktop-Role` header during the rename transition.
 
 Roles:
 
 - `agent`: work-side idle socket waiting to be paired.
 - `client`: home-side data socket for one RDP connection.
-- `home-agent`: Windows home app status presence.
+- `home-agent`: Windows, macOS, or Android home-agent status presence.
 - `probe`: self-test connection.
 - `dashboard`: browser status stream.
 
-The dashboard shows work-agent presence, home-app presence, active stream counts, total stream count, and recent remote addresses.
+The dashboard shows work-agent presence, home-app presence, active stream counts, total stream count, and recent remote addresses. It also serves the DeskFerry icon as `/relay/icon.svg` for favicon and header branding.
 
 ### Python Relay Web Service
 
-`python-relay/` is a FastAPI/ASGI implementation of the same relay contract. It is useful for hosting on Python-capable App Service plans, on a Linux VM such as OCI Always Free, or for local relay testing without the .NET runtime.
+`relay/python/` is a FastAPI/ASGI implementation of the same relay contract. It is useful for hosting on Python-capable App Service plans, on a Linux VM such as OCI Always Free, or for local relay testing without the .NET runtime.
 
 It exposes the same user-facing paths:
 
@@ -239,14 +258,14 @@ It exposes the same user-facing paths:
 Run it locally:
 
 ```powershell
-python -m pip install -r python-relay\requirements.txt
-python -m uvicorn app:app --app-dir python-relay --host 127.0.0.1 --port 8000
+python -m pip install -r relay\python\requirements.txt
+python -m uvicorn app:app --app-dir relay\python --host 127.0.0.1 --port 8000
 ```
 
 Build the deployable Python zip:
 
 ```powershell
-python -m pip install -r python-relay\requirements-dev.txt
+python -m pip install -r relay\python\requirements-dev.txt
 .\build\build-python-relay.ps1
 ```
 
@@ -276,19 +295,19 @@ Debug and operations:
 
 ### Agent Configurator
 
-`agent-configurator-windows-amd64.exe` is the native Windows setup and service management GUI.
+`deskferry-agent-configurator-windows-amd64.exe` is the native Windows setup and service management GUI.
 
 It:
 
-- Prefers `D:\TunnelDesktop\Agent` as the install directory when `D:` exists.
+- Prefers `D:\DeskFerry\Agent` as the install directory when `D:` exists.
 - Copies the selected agent binary to `agent.exe`.
-- Installs or updates the automatic `TunnelDesktopAgent` Windows service with the configured relay URL list.
+- Installs or updates the automatic `DeskFerryAgent` Windows service with the configured relay URL list.
 - Configures SCM restart recovery.
 - Starts, stops, restarts, uninstalls, refreshes status, opens the install folder, and runs `agent.exe -self-test`.
 
-### Home App
+### Windows Home App
 
-`client.exe` is the secure home-side Windows path. It provides:
+`home-agent/windows/` is the secure home-side Windows path. It provides:
 
 - A polished control panel with relay room URL, local RDP address, proxy mode, status tiles, room details, and activity log.
 - A notification-area icon with open, connect, stop, Remote Desktop, and quit actions.
@@ -297,9 +316,19 @@ It:
 - A loopback RDP listener, normally `127.0.0.1:3390`.
 - Automatic Remote Desktop launch when the user clicks `Connect`.
 
+### macOS Home Agent
+
+`home-agent/macos/` is the macOS home-side command-line agent. It provides:
+
+- A foreground local RDP listener, normally `127.0.0.1:3389`.
+- One outbound `client` WebSocket per local RDP connection.
+- A persistent `home-agent` presence WebSocket while it runs.
+- `-status` for relay room status.
+- `-open-rdp` to write and open a local `.rdp` profile with the configured loopback target.
+
 ### Android Home App
 
-`android-home/` is the Android home endpoint. It is not an RDP client by itself; it provides the loopback tunnel that an Android RDP client uses.
+`home-agent/android/` is the Android home endpoint. It is not an RDP client by itself; it provides the loopback tunnel that an Android RDP client uses.
 
 It provides:
 
@@ -310,7 +339,7 @@ It provides:
 - A persistent `home-agent` presence WebSocket while the service is running.
 - A persistent `dashboard` WebSocket for real-time work-agent and stream status.
 
-Good free Android RDP client options include Microsoft's Remote Desktop/Windows App client and the open-source FreeRDP-based aFreeRDP client. Configure the RDP client to connect to the TunnelDesktop local target shown in the Android app.
+Good free Android RDP client options include Microsoft's Remote Desktop/Windows App client and the open-source FreeRDP-based aFreeRDP client. Configure the RDP client to connect to the DeskFerry local target shown in the Android app.
 
 ## Security Model
 
@@ -366,13 +395,15 @@ Build Android home APK:
 Artifacts:
 
 ```text
-dist\azure-relay\tunneldesktop-azure-relay.zip
-dist\python-relay\tunneldesktop-python-relay.zip
-dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip
-dist\bin\agent-windows-amd64.exe
-dist\bin\agent-configurator-windows-amd64.exe
-dist\bin\client-windows-amd64.exe
-dist\android\tunneldesktop-home-android-debug.apk
+dist\azure-relay\deskferry-azure-relay.zip
+dist\python-relay\deskferry-python-relay.zip
+dist\python-relay\deskferry-python-relay-linux-cp39-vendored.zip
+dist\bin\deskferry-agent-windows-amd64.exe
+dist\bin\deskferry-agent-configurator-windows-amd64.exe
+dist\bin\deskferry-home-windows-amd64.exe
+dist\bin\deskferry-home-macos-arm64
+dist\bin\deskferry-home-macos-amd64
+dist\android\deskferry-home-android-debug.apk
 ```
 
 ## URL Configuration
@@ -432,7 +463,7 @@ Check:
 
 ### Saved RDP Login
 
-The Windows home app can save RDP credentials through Windows Credential Manager. Enter the work Windows username and password, then click `Save RDP Login`. TunnelDesktop calls `cmdkey.exe` for the local RDP target, writes a password-free `%APPDATA%\TunnelDesktop\home-client.rdp` launch profile, and clears the password field after saving. The password is not written to `%APPDATA%\TunnelDesktop\home-client.json` or the `.rdp` profile.
+The Windows home app can save RDP credentials through Windows Credential Manager. Enter the work Windows username and password, then click `Save RDP Login`. DeskFerry calls `cmdkey.exe` for the local RDP target, writes a password-free `%APPDATA%\DeskFerry\home-client.rdp` launch profile, and clears the password field after saving. The password is not written to `%APPDATA%\DeskFerry\home-client.json` or the `.rdp` profile.
 
 `Open Remote Desktop` and `Connect` launch MSTSC with that `.rdp` profile, so saved credentials are used automatically when Windows allows them. Remote Desktop may still prompt if Windows policy blocks saved credential delegation. In that case, allow saved credentials for the `TERMSRV/*` target through Windows policy, or continue signing in manually.
 
@@ -466,7 +497,7 @@ Build and test the Azure relay:
 .\build\build-azure-relay.ps1
 ```
 
-Rebuild after Windows agent/client changes:
+Rebuild after Go agent/client changes:
 
 ```powershell
 .\build\build-go.ps1
@@ -475,14 +506,17 @@ Rebuild after Windows agent/client changes:
 ## Repository Layout
 
 ```text
-azure-relay/      .NET Azure App Service WebSocket relay
-python-relay/     Python/FastAPI WebSocket relay
-cmd/agent         Windows service work-side agent
-cmd/agent-configurator Windows service setup/configurator GUI
-cmd/client        Windows control-panel/tray home app
-android-home/     Android foreground-service home app
-internal/tunnel   WebSocket, proxy, pipe, and role helpers
-build/            build scripts
+relay/azure-dotnet/      .NET Azure App Service WebSocket relay
+relay/python/            Python/FastAPI WebSocket relay
+work-agent/windows/service
+                         Windows service work-side agent
+work-agent/windows/configurator
+                         Windows service setup/configurator GUI
+home-agent/windows       Windows control-panel/tray home app
+home-agent/macos         macOS foreground CLI home agent
+home-agent/android       Android foreground-service home app
+internal/tunnel          WebSocket, proxy, pipe, and role helpers
+build/                   build scripts
 ```
 
 ## Status
@@ -496,6 +530,7 @@ This repo currently contains:
 - Windows work agent implemented as a Windows service deliverable.
 - Windows configurator GUI for installing and managing the work agent service.
 - Windows home app implemented as a friendly control-panel and tray deliverable.
+- macOS home agent implemented as a foreground CLI tunnel endpoint.
 - Android home app implemented as a foreground-service loopback tunnel endpoint.
 - Build scripts for Go binaries, relay packages, and the Android APK.
 
@@ -504,5 +539,6 @@ This repo currently contains:
 - The Azure relay is a simple in-memory broker. Restarting the App Service disconnects active sessions and clears room status.
 - Multiple App Service instances are not supported unless sticky routing or shared broker state is added.
 - The Go work agent supports direct, environment, and basic HTTP proxy URLs. NTLM proxy authentication is not implemented in the service.
-- The home app is a Windows RDP launcher and tunnel endpoint, not a full RDP client.
+- The Windows home app is an RDP launcher and tunnel endpoint, not a full RDP client.
+- The macOS home agent is a tunnel endpoint and `.rdp` launcher, not a full RDP client; use Microsoft Remote Desktop/Windows App or another macOS RDP client against `127.0.0.1:3389`.
 - The Android home app is also a tunnel endpoint, not a full RDP client; use a separate Android RDP client against `127.0.0.1:3389`.

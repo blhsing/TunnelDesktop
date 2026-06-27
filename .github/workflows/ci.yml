@@ -52,19 +52,19 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r .\python-relay\requirements-dev.txt
+          python -m pip install -r .\relay\python\requirements-dev.txt
 
-      - name: Run Go tests
+      - name: Build Go artifacts
         shell: pwsh
-        run: go test ./...
+        run: .\build\build-go.ps1
 
       - name: Build Azure relay
         shell: pwsh
-        run: dotnet build .\azure-relay\TunnelDesktop.Relay.csproj --configuration Release
+        run: dotnet build .\relay\azure-dotnet\DeskFerry.Relay.csproj --configuration Release
 
       - name: Run Python relay tests
         shell: pwsh
-        run: python -m pytest python-relay/tests
+        run: python -m pytest relay/python/tests
 
       - name: Build Android home APK
         shell: pwsh

@@ -1,4 +1,4 @@
-module tunneldesktop
+module deskferry
 
 go 1.25.0
 

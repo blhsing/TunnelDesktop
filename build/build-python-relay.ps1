@@ -1,17 +1,17 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$source = Join-Path $root 'python-relay'
+$source = Join-Path $root 'relay/python'
 $requirements = Join-Path $source 'requirements.txt'
 $publish = Join-Path $root 'dist/python-relay/publish'
-$zip = Join-Path $root 'dist/python-relay/tunneldesktop-python-relay.zip'
+$zip = Join-Path $root 'dist/python-relay/deskferry-python-relay.zip'
 $vendor = Join-Path $root 'dist/python-relay/vendor-linux-cp39'
 $vendoredPublish = Join-Path $root 'dist/python-relay/publish-linux-cp39-vendored'
-$vendoredZip = Join-Path $root 'dist/python-relay/tunneldesktop-python-relay-linux-cp39-vendored.zip'
+$vendoredZip = Join-Path $root 'dist/python-relay/deskferry-python-relay-linux-cp39-vendored.zip'
 
 Push-Location $root
 try {
-    python -m pytest python-relay/tests
+    python -m pytest relay/python/tests
     if ($LASTEXITCODE -ne 0) { throw 'python relay tests failed' }
 
     if (Test-Path -LiteralPath $publish) {
@@ -24,6 +24,9 @@ try {
 
     if (Test-Path -LiteralPath $zip) {
         Remove-Item -LiteralPath $zip -Force
+    }
+    Get-ChildItem -LiteralPath (Split-Path -Parent $zip) -Filter 'tunneldesktop-python-relay*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force
     }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $zip) | Out-Null
     Compress-Archive -Path (Join-Path $publish '*') -DestinationPath $zip -Force

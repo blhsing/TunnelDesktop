@@ -1,6 +1,6 @@
 param(
-    [string] $IcoPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'cmd/client/app.ico'),
-    [string] $PreviewPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'cmd/client/app-icon-256.png')
+    [string] $IcoPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'home-agent/windows/app.ico'),
+    [string] $PreviewPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'home-agent/windows/app-icon-256.png')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,8 +50,8 @@ function Render-ClientIcon {
     $bgRect = New-RectF ($scale * 0.055) ($scale * 0.055) ($scale * 0.89) ($scale * 0.89)
     $bgBrush = New-Object System.Drawing.Drawing2D.LinearGradientBrush -ArgumentList @(
         $bgRect,
-        (New-Argb 255 22 92 170),
-        (New-Argb 255 17 177 156),
+        (New-Argb 255 19 50 77),
+        (New-Argb 255 64 181 174),
         [System.Drawing.Drawing2D.LinearGradientMode]::ForwardDiagonal
     )
     $graphics.FillPath($bgBrush, $outer)
@@ -59,57 +59,98 @@ function Render-ClientIcon {
     $glowPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 90 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.018)))
     $graphics.DrawPath($glowPen, $outer)
 
-    $shadowBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 46 0 28 55))
-    $homeBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 250 255 255 255))
-    $doorBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 235 17 92 170))
-    $accentBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 255 255 190 75))
+    $shadowBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 52 3 23 39))
+    $whiteBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 252 255 255 255))
+    $screenBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 255 23 50 77))
+    $hullBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 255 230 109 79))
+    $waveBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 235 105 210 199))
+    $screenShineBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 34 255 255 255))
 
-    $roofShadow = [System.Drawing.PointF[]] @(
-        (New-PointF ($scale * 0.22) ($scale * 0.54)),
-        (New-PointF ($scale * 0.50) ($scale * 0.29)),
-        (New-PointF ($scale * 0.78) ($scale * 0.54)),
-        (New-PointF ($scale * 0.70) ($scale * 0.54)),
-        (New-PointF ($scale * 0.50) ($scale * 0.37)),
-        (New-PointF ($scale * 0.30) ($scale * 0.54))
-    )
-    $graphics.TranslateTransform(0, [single] ([Math]::Max(1.0, $scale * 0.018)))
-    $graphics.FillPolygon($shadowBrush, $roofShadow)
+    $shadowOffset = [single] ([Math]::Max(1.0, $scale * 0.022))
+
+    $currentPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 48 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.010)))
+    $currentPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $currentPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $graphics.SetClip($outer)
+    $graphics.DrawBezier($currentPen, (New-PointF ($scale * 0.11) ($scale * 0.32)), (New-PointF ($scale * 0.28) ($scale * 0.20)), (New-PointF ($scale * 0.48) ($scale * 0.26)), (New-PointF ($scale * 0.63) ($scale * 0.16)))
+    $graphics.DrawBezier($currentPen, (New-PointF ($scale * 0.39) ($scale * 0.90)), (New-PointF ($scale * 0.54) ($scale * 0.80)), (New-PointF ($scale * 0.75) ($scale * 0.86)), (New-PointF ($scale * 0.95) ($scale * 0.73)))
+    $graphics.ResetClip()
+
+    $monitorShadow = New-RoundedRectPath ($scale * 0.25) ($scale * 0.18) ($scale * 0.50) ($scale * 0.37) ($scale * 0.055)
+    $graphics.TranslateTransform(0, $shadowOffset)
+    $graphics.FillPath($shadowBrush, $monitorShadow)
     $graphics.ResetTransform()
 
-    $bodyShadow = New-RoundedRectPath ($scale * 0.30) ($scale * 0.52) ($scale * 0.40) ($scale * 0.27) ($scale * 0.045)
-    $graphics.TranslateTransform(0, [single] ([Math]::Max(1.0, $scale * 0.018)))
-    $graphics.FillPath($shadowBrush, $bodyShadow)
-    $graphics.ResetTransform()
-    $bodyShadow.Dispose()
+    $monitor = New-RoundedRectPath ($scale * 0.25) ($scale * 0.16) ($scale * 0.50) ($scale * 0.37) ($scale * 0.055)
+    $graphics.FillPath($whiteBrush, $monitor)
+    $screen = New-RoundedRectPath ($scale * 0.31) ($scale * 0.23) ($scale * 0.38) ($scale * 0.22) ($scale * 0.025)
+    $graphics.FillPath($screenBrush, $screen)
+    $screenShine = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $screenShine.AddPolygon([System.Drawing.PointF[]] @(
+        (New-PointF ($scale * 0.35) ($scale * 0.23)),
+        (New-PointF ($scale * 0.47) ($scale * 0.23)),
+        (New-PointF ($scale * 0.38) ($scale * 0.45)),
+        (New-PointF ($scale * 0.31) ($scale * 0.45))
+    ))
+    $graphics.SetClip($screen)
+    $graphics.FillPath($screenShineBrush, $screenShine)
+    $graphics.ResetClip()
 
-    $graphics.FillPolygon($homeBrush, $roofShadow)
-    $body = New-RoundedRectPath ($scale * 0.30) ($scale * 0.50) ($scale * 0.40) ($scale * 0.28) ($scale * 0.045)
-    $graphics.FillPath($homeBrush, $body)
-
-    $door = New-RoundedRectPath ($scale * 0.46) ($scale * 0.60) ($scale * 0.11) ($scale * 0.18) ($scale * 0.022)
-    $graphics.FillPath($doorBrush, $door)
-
-    $curve = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $curve.AddBezier(
-        (New-PointF ($scale * 0.57) ($scale * 0.43)),
-        (New-PointF ($scale * 0.65) ($scale * 0.34)),
-        (New-PointF ($scale * 0.73) ($scale * 0.27)),
-        (New-PointF ($scale * 0.84) ($scale * 0.21))
+    $stand = [System.Drawing.PointF[]] @(
+        (New-PointF ($scale * 0.46) ($scale * 0.53)),
+        (New-PointF ($scale * 0.54) ($scale * 0.53)),
+        (New-PointF ($scale * 0.58) ($scale * 0.64)),
+        (New-PointF ($scale * 0.42) ($scale * 0.64))
     )
-    $signalPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 245 255 190 75), [single] ([Math]::Max(2.0, $scale * 0.045)))
-    $signalPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $signalPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $graphics.DrawPath($signalPen, $curve)
+    $graphics.FillPolygon($whiteBrush, $stand)
+    $base = New-RoundedRectPath ($scale * 0.36) ($scale * 0.62) ($scale * 0.28) ($scale * 0.055) ($scale * 0.025)
+    $graphics.FillPath($whiteBrush, $base)
 
-    $innerPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 180 210 255 250), [single] ([Math]::Max(1.0, $scale * 0.018)))
-    $innerPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $innerPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $graphics.DrawPath($innerPen, $curve)
+    $hullShadow = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $hullShadow.AddLine((New-PointF ($scale * 0.18) ($scale * 0.65)), (New-PointF ($scale * 0.84) ($scale * 0.65)))
+    $hullShadow.AddLine((New-PointF ($scale * 0.84) ($scale * 0.65)), (New-PointF ($scale * 0.77) ($scale * 0.75)))
+    $hullShadow.AddBezier((New-PointF ($scale * 0.77) ($scale * 0.75)), (New-PointF ($scale * 0.69) ($scale * 0.82)), (New-PointF ($scale * 0.37) ($scale * 0.82)), (New-PointF ($scale * 0.29) ($scale * 0.77)))
+    $hullShadow.AddLine((New-PointF ($scale * 0.29) ($scale * 0.77)), (New-PointF ($scale * 0.18) ($scale * 0.65)))
+    $hullShadow.CloseFigure()
+    $graphics.TranslateTransform(0, $shadowOffset)
+    $graphics.FillPath($shadowBrush, $hullShadow)
+    $graphics.ResetTransform()
 
-    $dot = New-RectF ($scale * 0.79) ($scale * 0.15) ($scale * 0.11) ($scale * 0.11)
-    $graphics.FillEllipse($accentBrush, $dot)
+    $hull = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $hull.AddLine((New-PointF ($scale * 0.18) ($scale * 0.62)), (New-PointF ($scale * 0.84) ($scale * 0.62)))
+    $hull.AddLine((New-PointF ($scale * 0.84) ($scale * 0.62)), (New-PointF ($scale * 0.77) ($scale * 0.72)))
+    $hull.AddBezier((New-PointF ($scale * 0.77) ($scale * 0.72)), (New-PointF ($scale * 0.68) ($scale * 0.78)), (New-PointF ($scale * 0.38) ($scale * 0.78)), (New-PointF ($scale * 0.29) ($scale * 0.74)))
+    $hull.AddLine((New-PointF ($scale * 0.29) ($scale * 0.74)), (New-PointF ($scale * 0.18) ($scale * 0.62)))
+    $hull.CloseFigure()
+    $graphics.FillPath($hullBrush, $hull)
 
-    foreach ($item in @($bgBrush, $glowPen, $shadowBrush, $homeBrush, $doorBrush, $accentBrush, $outer, $body, $door, $curve, $signalPen, $innerPen)) {
+    $railPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 215 255 255 255), [single] ([Math]::Max(1.2, $scale * 0.018)))
+    $railPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $railPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $graphics.DrawLine($railPen, (New-PointF ($scale * 0.29) ($scale * 0.65)), (New-PointF ($scale * 0.72) ($scale * 0.65)))
+
+    $wave1 = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $wave1.AddLine((New-PointF 0 ($scale * 0.75)), (New-PointF 0 ($scale * 0.75)))
+    $wave1.AddBezier((New-PointF 0 ($scale * 0.75)), (New-PointF ($scale * 0.12) ($scale * 0.70)), (New-PointF ($scale * 0.28) ($scale * 0.80)), (New-PointF ($scale * 0.44) ($scale * 0.75)))
+    $wave1.AddBezier((New-PointF ($scale * 0.44) ($scale * 0.75)), (New-PointF ($scale * 0.53) ($scale * 0.70)), (New-PointF ($scale * 0.62) ($scale * 0.80)), (New-PointF ($scale * 0.72) ($scale * 0.75)))
+    $wave1.AddBezier((New-PointF ($scale * 0.72) ($scale * 0.75)), (New-PointF ($scale * 0.84) ($scale * 0.70)), (New-PointF ($scale * 0.93) ($scale * 0.76)), (New-PointF $scale ($scale * 0.72)))
+    $wave1.AddLine((New-PointF $scale $scale), (New-PointF 0 $scale))
+    $wave1.CloseFigure()
+    $graphics.SetClip($outer)
+    $graphics.FillPath($waveBrush, $wave1)
+
+    $wavePen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 150 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.012)))
+    $wavePen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $wavePen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $graphics.DrawBezier($wavePen, (New-PointF ($scale * 0.03) ($scale * 0.80)), (New-PointF ($scale * 0.24) ($scale * 0.73)), (New-PointF ($scale * 0.37) ($scale * 0.87)), (New-PointF ($scale * 0.55) ($scale * 0.80)))
+    $graphics.DrawBezier($wavePen, (New-PointF ($scale * 0.55) ($scale * 0.80)), (New-PointF ($scale * 0.68) ($scale * 0.74)), (New-PointF ($scale * 0.83) ($scale * 0.83)), (New-PointF ($scale * 0.98) ($scale * 0.78)))
+    $fineWavePen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 82 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.007)))
+    $fineWavePen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $fineWavePen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $graphics.DrawBezier($fineWavePen, (New-PointF ($scale * 0.13) ($scale * 0.90)), (New-PointF ($scale * 0.31) ($scale * 0.86)), (New-PointF ($scale * 0.42) ($scale * 0.93)), (New-PointF ($scale * 0.61) ($scale * 0.89)))
+    $graphics.ResetClip()
+
+    foreach ($item in @($bgBrush, $glowPen, $shadowBrush, $whiteBrush, $screenBrush, $hullBrush, $waveBrush, $screenShineBrush, $outer, $currentPen, $monitorShadow, $monitor, $screen, $screenShine, $base, $hullShadow, $hull, $railPen, $wave1, $wavePen, $fineWavePen)) {
         if ($null -ne $item) {
             $item.Dispose()
         }

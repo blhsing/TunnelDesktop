@@ -60,8 +60,8 @@ function Build-WindowsResources {
     & (Join-Path $PSScriptRoot 'generate-client-icon.ps1')
     if (-not $?) { throw 'client icon generation failed' }
     $resources = @(
-        @{ Manifest = 'cmd/agent-configurator/app.manifest'; Output = 'cmd/agent-configurator/rsrc_windows_amd64.syso'; Name = 'agent configurator' },
-        @{ Manifest = 'cmd/client/app.manifest'; Output = 'cmd/client/rsrc_windows_amd64.syso'; Name = 'home app'; Icon = 'cmd/client/app.ico' }
+        @{ Manifest = 'work-agent/windows/configurator/app.manifest'; Output = 'work-agent/windows/configurator/rsrc_windows_amd64.syso'; Name = 'agent configurator' },
+        @{ Manifest = 'home-agent/windows/app.manifest'; Output = 'home-agent/windows/rsrc_windows_amd64.syso'; Name = 'home app'; Icon = 'home-agent/windows/app.ico' }
     )
     foreach ($resource in $resources) {
         $manifest = Join-Path $root $resource.Manifest
@@ -85,12 +85,20 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'go test failed' }
 
     $targets = @(
-        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-windows-amd64.exe'; Package = './cmd/agent' },
-        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'agent-configurator-windows-amd64.exe'; Package = './cmd/agent-configurator'; Ldflags = '-s -w -H windowsgui' },
-        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'client-windows-amd64.exe'; Package = './cmd/client'; Ldflags = '-s -w -H windowsgui' }
+        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'deskferry-agent-windows-amd64.exe'; Package = './work-agent/windows/service' },
+        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'deskferry-agent-configurator-windows-amd64.exe'; Package = './work-agent/windows/configurator'; Ldflags = '-s -w -H windowsgui' },
+        @{ GOOS = 'windows'; GOARCH = 'amd64'; Name = 'deskferry-home-windows-amd64.exe'; Package = './home-agent/windows'; Ldflags = '-s -w -H windowsgui' },
+        @{ GOOS = 'darwin'; GOARCH = 'arm64'; Name = 'deskferry-home-macos-arm64'; Package = './home-agent/macos' },
+        @{ GOOS = 'darwin'; GOARCH = 'amd64'; Name = 'deskferry-home-macos-amd64'; Package = './home-agent/macos' }
     )
 
-    $legacyArtifactPatterns = @('agent-installer-windows-amd64.exe', 'relay-*')
+    $legacyArtifactPatterns = @(
+        'agent-installer-windows-amd64.exe',
+        'agent-windows-amd64.exe',
+        'agent-configurator-windows-amd64.exe',
+        'client-windows-amd64.exe',
+        'relay-*'
+    )
     foreach ($legacyArtifactPattern in $legacyArtifactPatterns) {
         Get-ChildItem -LiteralPath $out -Filter $legacyArtifactPattern -File -ErrorAction SilentlyContinue | ForEach-Object {
             Remove-Item -LiteralPath $_.FullName -Force

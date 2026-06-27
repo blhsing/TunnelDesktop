@@ -126,8 +126,9 @@ func DialWebSocket(ctx context.Context, relayAddr, proxySpec, role, token string
 	}
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+token)
+	header.Set("X-DeskFerry-Role", role)
 	header.Set("X-TunnelDesktop-Role", role)
-	header.Set("User-Agent", "TunnelDesktop/0.2")
+	header.Set("User-Agent", "DeskFerry/0.2")
 	c, resp, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
 		HTTPClient:      webSocketHTTPClient(relayAddr, proxySpec),
 		HTTPHeader:      header,

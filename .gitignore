@@ -8,3 +8,6 @@ __pycache__/
 android-home/.gradle/
 android-home/build/
 android-home/app/build/
+home-agent/android/.gradle/
+home-agent/android/build/
+home-agent/android/app/build/

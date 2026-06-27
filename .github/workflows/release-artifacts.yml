@@ -55,7 +55,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r .\python-relay\requirements-dev.txt
+          python -m pip install -r .\relay\python\requirements-dev.txt
 
       - name: Build artifacts
         shell: pwsh
@@ -69,13 +69,15 @@ jobs:
         shell: pwsh
         run: |
           $files = @(
-            'dist\bin\agent-windows-amd64.exe',
-            'dist\bin\agent-configurator-windows-amd64.exe',
-            'dist\bin\client-windows-amd64.exe',
-            'dist\azure-relay\tunneldesktop-azure-relay.zip',
-            'dist\python-relay\tunneldesktop-python-relay.zip',
-            'dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip',
-            'dist\android\tunneldesktop-home-android-debug.apk'
+            'dist\bin\deskferry-agent-windows-amd64.exe',
+            'dist\bin\deskferry-agent-configurator-windows-amd64.exe',
+            'dist\bin\deskferry-home-windows-amd64.exe',
+            'dist\bin\deskferry-home-macos-arm64',
+            'dist\bin\deskferry-home-macos-amd64',
+            'dist\azure-relay\deskferry-azure-relay.zip',
+            'dist\python-relay\deskferry-python-relay.zip',
+            'dist\python-relay\deskferry-python-relay-linux-cp39-vendored.zip',
+            'dist\android\deskferry-home-android-debug.apk'
           )
           foreach ($file in $files) {
             if (-not (Test-Path -LiteralPath $file)) {
@@ -105,12 +107,14 @@ jobs:
         run: |
           $tag = '${{ inputs.tag }}'
           gh release upload $tag `
-            'dist\azure-relay\tunneldesktop-azure-relay.zip' `
-            'dist\python-relay\tunneldesktop-python-relay.zip' `
-            'dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip' `
-            'dist\android\tunneldesktop-home-android-debug.apk' `
-            'dist\bin\agent-windows-amd64.exe' `
-            'dist\bin\agent-configurator-windows-amd64.exe' `
-            'dist\bin\client-windows-amd64.exe' `
+            'dist\azure-relay\deskferry-azure-relay.zip' `
+            'dist\python-relay\deskferry-python-relay.zip' `
+            'dist\python-relay\deskferry-python-relay-linux-cp39-vendored.zip' `
+            'dist\android\deskferry-home-android-debug.apk' `
+            'dist\bin\deskferry-agent-windows-amd64.exe' `
+            'dist\bin\deskferry-agent-configurator-windows-amd64.exe' `
+            'dist\bin\deskferry-home-windows-amd64.exe' `
+            'dist\bin\deskferry-home-macos-arm64' `
+            'dist\bin\deskferry-home-macos-amd64' `
             'dist\bin\SHA256SUMS.txt' `
             --clobber

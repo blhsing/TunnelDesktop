@@ -2,26 +2,27 @@
 
 ## Project Overview
 
-TunnelDesktop is a Go + .NET + Python + Android project for an outbound-only RDP rendezvous tunnel. The normal relay is the Azure App Service at `https://test-officialwebsite.azurewebsites.net/relay/`, implemented by `azure-relay/`. A protocol-compatible Python/FastAPI relay lives in `python-relay/`; the OCI VM deployment is reachable under `http://217.142.228.117/relay/<room>`. The work-side Windows service may connect to one or more relay room URLs at the same time, while the Windows and Android home apps connect to one chosen relay room URL such as `https://test-officialwebsite.azurewebsites.net/relay/workdesk`.
+DeskFerry is a Go + .NET + Python + Android project for an outbound-only RDP rendezvous tunnel. The normal relay is the Azure App Service at `https://test-officialwebsite.azurewebsites.net/relay/`, implemented by `relay/azure-dotnet/`. A protocol-compatible Python/FastAPI relay lives in `relay/python/`; the OCI VM deployment is reachable under `http://217.142.228.117/relay/<room>`. The work-side Windows service may connect to one or more relay room URLs at the same time, while the Windows, macOS, and Android home agents connect to one chosen relay room URL such as `https://test-officialwebsite.azurewebsites.net/relay/workdesk`.
 
 ## Architecture Rules
 
 - The Azure App Service relay under `/relay/` is the normal broker.
-- The OCI Python relay is a compatible alternate broker, currently deployed as `tunneldesktop-relay.service` on `217.142.228.117`.
+- The OCI Python relay is a compatible alternate broker, currently deployed as `deskferry-relay.service` on `217.142.228.117`.
 - A named room URL under `/relay/<room>` is the normal and only user-facing pairing configuration.
 - The work agent may be configured with multiple relay room URLs simultaneously when they use the same room name, so home apps can choose any reachable relay.
 - Do not reintroduce generated client files or file-based pairing artifacts for the normal path.
 - The Azure relay WebSocket endpoint is `/relay/ws` for the overview room and `/relay/<room>/ws` for named rooms.
 - URL-only WebSocket clients should use standard proxy environment variables by default; explicit `-proxy direct` is the bypass path.
-- The home side can be the Windows home app in `cmd/client` or the Android home app in `android-home/`.
+- The home side can be the Windows home app in `home-agent/windows`, the macOS home agent in `home-agent/macos`, or the Android home app in `home-agent/android/`.
 - The Android app is a home-agent client only: it listens on Android loopback and connects out to the relay; it must not become a phone-hosted relay.
 - The Windows home app may keep a lightweight `home-agent` WebSocket open for dashboard presence, but RDP data uses `client` sockets.
+- The macOS home agent may keep a lightweight `home-agent` WebSocket open for dashboard presence, but RDP data uses `client` sockets.
 - The Android home app may also keep a lightweight `home-agent` WebSocket open for dashboard presence while its foreground service is running.
 - Android relay status should use the relay `dashboard` WebSocket stream, not HTTP polling.
 - The Windows home app should remain control-panel/tray-first. Console mode is debug-only.
 - The Windows home app should listen on loopback by default, normally `127.0.0.1:3390`.
-- `cmd/agent` must remain Windows-service-first. Console mode is debug-only.
-- `cmd/agent-configurator` owns the native Windows setup/configurator GUI for the work agent service.
+- `work-agent/windows/service` must remain Windows-service-first. Console mode is debug-only.
+- `work-agent/windows/configurator` owns the native Windows setup/configurator GUI for the work agent service.
 - Do not add stealth, anti-monitoring, or obfuscation behavior.
 
 ## Sensitive Files
@@ -47,11 +48,11 @@ Build Azure relay zip:
 Build Python relay zips:
 
 ```powershell
-python -m pip install -r python-relay\requirements-dev.txt
+python -m pip install -r relay\python\requirements-dev.txt
 .\build\build-python-relay.ps1
 ```
 
-Build Windows/Linux Go artifacts:
+Build Windows/macOS Go artifacts:
 
 ```powershell
 .\build\build-go.ps1
@@ -63,7 +64,7 @@ Build Android home APK:
 .\build\build-android-home.ps1
 ```
 
-When `cmd/agent`, `cmd/agent-configurator`, `cmd/client`, `internal/tunnel`, or shared relay behavior changes, run `go test ./...` and `.\build\build-go.ps1`. When `azure-relay/` changes, run `.\build\build-azure-relay.ps1`. When `python-relay/` changes, run `.\build\build-python-relay.ps1`. When `android-home/` changes, run `.\build\build-android-home.ps1`.
+When `work-agent/windows/service`, `work-agent/windows/configurator`, `home-agent/windows`, `home-agent/macos`, `internal/tunnel`, or shared relay behavior changes, run `go test ./...` and `.\build\build-go.ps1`. When `relay/azure-dotnet/` changes, run `.\build\build-azure-relay.ps1`. When `relay/python/` changes, run `.\build\build-python-relay.ps1`. When `home-agent/android/` changes, run `.\build\build-android-home.ps1`.
 
 ## Tooling Notes
 
@@ -82,15 +83,17 @@ Deploy the Azure relay to the App Service backing `https://test-officialwebsite.
 
 Deployable artifacts:
 
-- `dist/azure-relay/tunneldesktop-azure-relay.zip`
-- `dist/python-relay/tunneldesktop-python-relay.zip`
-- `dist/python-relay/tunneldesktop-python-relay-linux-cp39-vendored.zip`
-- `dist/bin/agent-windows-amd64.exe`
-- `dist/bin/agent-configurator-windows-amd64.exe`
-- `dist/bin/client-windows-amd64.exe`
-- `dist/android/tunneldesktop-home-android-debug.apk`
+- `dist/azure-relay/deskferry-azure-relay.zip`
+- `dist/python-relay/deskferry-python-relay.zip`
+- `dist/python-relay/deskferry-python-relay-linux-cp39-vendored.zip`
+- `dist/bin/deskferry-agent-windows-amd64.exe`
+- `dist/bin/deskferry-agent-configurator-windows-amd64.exe`
+- `dist/bin/deskferry-home-windows-amd64.exe`
+- `dist/bin/deskferry-home-macos-arm64`
+- `dist/bin/deskferry-home-macos-amd64`
+- `dist/android/deskferry-home-android-debug.apk`
 
-After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested. For the OCI Python relay, upload the Linux cp39 vendored zip to `/tmp/tunneldesktop-python-relay-vendored.zip`, extract under `/opt/tunneldesktop/python-relay`, and restart `tunneldesktop-relay.service`.
+After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested. For the OCI Python relay, upload the Linux cp39 vendored zip to `/tmp/deskferry-python-relay-vendored.zip`, extract under `/opt/deskferry/python-relay`, and restart `deskferry-relay.service`.
 
 ## Verification Expectations
 
@@ -117,7 +120,7 @@ For Azure relay changes, run:
 For Python relay changes, run:
 
 ```powershell
-python -m pip install -r python-relay\requirements-dev.txt
+python -m pip install -r relay\python\requirements-dev.txt
 .\build\build-python-relay.ps1
 ```
 
