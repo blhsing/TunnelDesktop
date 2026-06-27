@@ -1,6 +1,6 @@
 # TunnelDesktop
 
-TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses a .NET Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The work-side Windows service and the home-side Windows app both connect out to that service over HTTPS WebSockets.
+TunnelDesktop is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `python-relay/`. The work-side Windows service and the home-side Windows app both connect out to the relay over HTTPS WebSockets.
 
 Configuration is a single shared relay room URL. For example:
 
@@ -15,11 +15,13 @@ The room name is the path segment after `/relay/`. The first endpoint to use a r
 - [How It Works](#how-it-works)
 - [Installation](#installation)
   - [1. Deploy Azure Relay](#1-deploy-azure-relay)
-  - [2. Choose A Room URL](#2-choose-a-room-url)
-  - [3. Install Work Agent](#3-install-work-agent)
-  - [4. Run Home App](#4-run-home-app)
+  - [2. Deploy Python Relay On OCI](#2-deploy-python-relay-on-oci)
+  - [3. Choose A Room URL](#3-choose-a-room-url)
+  - [4. Install Work Agent](#4-install-work-agent)
+  - [5. Run Home App](#5-run-home-app)
 - [Deliverables](#deliverables)
   - [Azure Relay Web Service](#azure-relay-web-service)
+  - [Python Relay Web Service](#python-relay-web-service)
   - [Work Agent](#work-agent)
   - [Agent Configurator](#agent-configurator)
   - [Home App](#home-app)
@@ -83,7 +85,37 @@ https://test-officialwebsite.azurewebsites.net/relay/health
 https://test-officialwebsite.azurewebsites.net/relay/status
 ```
 
-### 2. Choose A Room URL
+### 2. Deploy Python Relay On OCI
+
+The Python relay can also run on a small Linux VM. The current OCI deployment is:
+
+```text
+http://217.142.228.117/relay/b
+```
+
+It runs as the systemd service `tunneldesktop-relay.service` under `/opt/tunneldesktop/python-relay` and listens on public HTTP port `80`. The OCI security rules must allow inbound TCP `80`, and the VM firewall must allow the `http` service.
+
+Build the normal Python source zip and a Linux/Python 3.9 vendored zip:
+
+```powershell
+python -m pip install -r python-relay\requirements-dev.txt
+.\build\build-python-relay.ps1
+```
+
+Artifacts:
+
+```text
+dist\python-relay\tunneldesktop-python-relay.zip
+dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip
+```
+
+The vendored zip is for Oracle Linux 9's system Python 3.9 and avoids running `pip` on a low-memory Always Free VM. Deploy by extracting the vendored zip to `/opt/tunneldesktop/python-relay`, setting `PYTHONPATH=/opt/tunneldesktop/python-relay/vendor`, and running:
+
+```text
+/usr/bin/python3 -m uvicorn app:app --host 0.0.0.0 --port 80 --proxy-headers
+```
+
+### 3. Choose A Room URL
 
 Pick a room name that is easy for you to remember but not obvious to outsiders:
 
@@ -91,9 +123,15 @@ Pick a room name that is easy for you to remember but not obvious to outsiders:
 https://test-officialwebsite.azurewebsites.net/relay/workdesk
 ```
 
+For the OCI relay, the equivalent room URL is:
+
+```text
+http://217.142.228.117/relay/workdesk
+```
+
 Use exactly the same URL on the work agent and the home app.
 
-### 3. Install Work Agent
+### 4. Install Work Agent
 
 Run the configurator:
 
@@ -118,7 +156,7 @@ Useful checks:
 
 WebSocket mode uses standard proxy environment variables by default, such as `HTTP_PROXY` and `HTTPS_PROXY`. Use `-proxy http://proxy.example:8080` to force a proxy, or `-proxy direct` to bypass proxy discovery.
 
-### 4. Run Home App
+### 5. Run Home App
 
 Start the Windows home app with the same room URL:
 
@@ -161,6 +199,33 @@ Roles:
 - `dashboard`: browser status stream.
 
 The dashboard shows work-agent presence, home-app presence, active stream counts, total stream count, and recent remote addresses.
+
+### Python Relay Web Service
+
+`python-relay/` is a FastAPI/ASGI implementation of the same relay contract. It is useful for hosting on Python-capable App Service plans, on a Linux VM such as OCI Always Free, or for local relay testing without the .NET runtime.
+
+It exposes the same user-facing paths:
+
+- `GET /relay/` and `GET /relay/<room>` for the live dashboard.
+- `GET /relay/health` for health JSON.
+- `GET /relay/status` for JSON status.
+- `GET /relay/ws` and `GET /relay/<room>/ws` as WebSocket endpoints.
+
+Run it locally:
+
+```powershell
+python -m pip install -r python-relay\requirements.txt
+python -m uvicorn app:app --app-dir python-relay --host 127.0.0.1 --port 8000
+```
+
+Build the deployable Python zip:
+
+```powershell
+python -m pip install -r python-relay\requirements-dev.txt
+.\build\build-python-relay.ps1
+```
+
+The build emits both the source-style zip and an Oracle Linux 9 / Python 3.9 vendored zip for minimal VM deployments.
 
 ### Work Agent
 
@@ -222,6 +287,7 @@ Required:
 
 - Go 1.25+.
 - .NET SDK 8+ for the Azure relay.
+- Python 3.11+ for the Python relay.
 - `rsrc` for Windows GUI manifest resources; `build\build-go.ps1` installs it under `D:\Go\bin` when missing.
 
 This repo has been built with Go installed under `D:\Scoop` and .NET SDK 9.x publishing the relay as `net8.0`.
@@ -234,6 +300,12 @@ Build Azure relay zip:
 .\build\build-azure-relay.ps1
 ```
 
+Build Python relay zip:
+
+```powershell
+.\build\build-python-relay.ps1
+```
+
 Build Go binaries:
 
 ```powershell
@@ -244,6 +316,8 @@ Artifacts:
 
 ```text
 dist\azure-relay\tunneldesktop-azure-relay.zip
+dist\python-relay\tunneldesktop-python-relay.zip
+dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip
 dist\bin\agent-windows-amd64.exe
 dist\bin\agent-configurator-windows-amd64.exe
 dist\bin\client-windows-amd64.exe
@@ -255,6 +329,12 @@ Use one shared URL:
 
 ```text
 https://test-officialwebsite.azurewebsites.net/relay/<room>
+```
+
+OCI Python relay example:
+
+```text
+http://217.142.228.117/relay/<room>
 ```
 
 Rules:
@@ -336,6 +416,7 @@ Rebuild after Windows agent/client changes:
 
 ```text
 azure-relay/      .NET Azure App Service WebSocket relay
+python-relay/     Python/FastAPI WebSocket relay
 cmd/agent         Windows service work-side agent
 cmd/agent-configurator Windows service setup/configurator GUI
 cmd/client        Windows control-panel/tray home app
@@ -348,6 +429,7 @@ build/            build scripts
 This repo currently contains:
 
 - Azure App Service WebSocket relay source and publish script.
+- Protocol-compatible Python WebSocket relay source and publish script.
 - Live dashboard with WebSocket status updates.
 - Named-room URL joining under `/relay/<room>`.
 - Windows work agent implemented as a Windows service deliverable.

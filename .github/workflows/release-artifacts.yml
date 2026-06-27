@@ -32,11 +32,23 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Python relay dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r .\python-relay\requirements-dev.txt
+
       - name: Build artifacts
         shell: pwsh
         run: |
           .\build\build-go.ps1
           .\build\build-azure-relay.ps1
+          .\build\build-python-relay.ps1
 
       - name: Write checksums
         shell: pwsh
@@ -45,7 +57,9 @@ jobs:
             'dist\bin\agent-windows-amd64.exe',
             'dist\bin\agent-configurator-windows-amd64.exe',
             'dist\bin\client-windows-amd64.exe',
-            'dist\azure-relay\tunneldesktop-azure-relay.zip'
+            'dist\azure-relay\tunneldesktop-azure-relay.zip',
+            'dist\python-relay\tunneldesktop-python-relay.zip',
+            'dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip'
           )
           foreach ($file in $files) {
             if (-not (Test-Path -LiteralPath $file)) {
@@ -76,6 +90,8 @@ jobs:
           $tag = '${{ inputs.tag }}'
           gh release upload $tag `
             'dist\azure-relay\tunneldesktop-azure-relay.zip' `
+            'dist\python-relay\tunneldesktop-python-relay.zip' `
+            'dist\python-relay\tunneldesktop-python-relay-linux-cp39-vendored.zip' `
             'dist\bin\agent-windows-amd64.exe' `
             'dist\bin\agent-configurator-windows-amd64.exe' `
             'dist\bin\client-windows-amd64.exe' `

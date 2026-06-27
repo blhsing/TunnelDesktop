@@ -2,11 +2,12 @@
 
 ## Project Overview
 
-TunnelDesktop is a Go + .NET project for an outbound-only RDP rendezvous tunnel. The normal relay is the Azure App Service at `https://test-officialwebsite.azurewebsites.net/relay/`, implemented by `azure-relay/`. The work-side Windows service and the home-side Windows app are configured by one shared relay room URL such as `https://test-officialwebsite.azurewebsites.net/relay/workdesk`.
+TunnelDesktop is a Go + .NET + Python project for an outbound-only RDP rendezvous tunnel. The normal relay is the Azure App Service at `https://test-officialwebsite.azurewebsites.net/relay/`, implemented by `azure-relay/`. A protocol-compatible Python/FastAPI relay lives in `python-relay/`; the current OCI VM deployment is `http://217.142.228.117/relay/b`. The work-side Windows service and the home-side Windows app are configured by one shared relay room URL such as `https://test-officialwebsite.azurewebsites.net/relay/workdesk`.
 
 ## Architecture Rules
 
 - The Azure App Service relay under `/relay/` is the normal broker.
+- The OCI Python relay is a compatible alternate broker, currently deployed as `tunneldesktop-relay.service` on `217.142.228.117`.
 - A named room URL under `/relay/<room>` is the normal and only user-facing pairing configuration.
 - Do not reintroduce generated client files or file-based pairing artifacts for the normal path.
 - The Azure relay WebSocket endpoint is `/relay/ws` for the overview room and `/relay/<room>/ws` for named rooms.
@@ -39,13 +40,20 @@ Build Azure relay zip:
 .\build\build-azure-relay.ps1
 ```
 
+Build Python relay zips:
+
+```powershell
+python -m pip install -r python-relay\requirements-dev.txt
+.\build\build-python-relay.ps1
+```
+
 Build Windows/Linux Go artifacts:
 
 ```powershell
 .\build\build-go.ps1
 ```
 
-When `cmd/agent`, `cmd/agent-configurator`, `cmd/client`, `internal/tunnel`, or shared relay behavior changes, run `go test ./...` and `.\build\build-go.ps1`. When `azure-relay/` changes, run `.\build\build-azure-relay.ps1`.
+When `cmd/agent`, `cmd/agent-configurator`, `cmd/client`, `internal/tunnel`, or shared relay behavior changes, run `go test ./...` and `.\build\build-go.ps1`. When `azure-relay/` changes, run `.\build\build-azure-relay.ps1`. When `python-relay/` changes, run `.\build\build-python-relay.ps1`.
 
 ## Tooling Notes
 
@@ -53,6 +61,7 @@ This repo has been built with:
 
 - Go 1.26.x installed under `D:\Scoop`
 - .NET SDK 9.x, publishing the relay as `net8.0`
+- Python 3.14.x
 - rsrc under `D:\Go\bin` for Windows GUI manifest resources
 
 ## Deployment
@@ -62,11 +71,13 @@ Deploy the Azure relay to the App Service backing `https://test-officialwebsite.
 Deployable artifacts:
 
 - `dist/azure-relay/tunneldesktop-azure-relay.zip`
+- `dist/python-relay/tunneldesktop-python-relay.zip`
+- `dist/python-relay/tunneldesktop-python-relay-linux-cp39-vendored.zip`
 - `dist/bin/agent-windows-amd64.exe`
 - `dist/bin/agent-configurator-windows-amd64.exe`
 - `dist/bin/client-windows-amd64.exe`
 
-After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested.
+After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested. For the OCI Python relay, upload the Linux cp39 vendored zip to `/tmp/tunneldesktop-python-relay-vendored.zip`, extract under `/opt/tunneldesktop/python-relay`, and restart `tunneldesktop-relay.service`.
 
 ## Verification Expectations
 
@@ -88,6 +99,19 @@ For Azure relay changes, run:
 
 ```powershell
 .\build\build-azure-relay.ps1
+```
+
+For Python relay changes, run:
+
+```powershell
+python -m pip install -r python-relay\requirements-dev.txt
+.\build\build-python-relay.ps1
+```
+
+For deployed Python relay changes, also verify:
+
+```powershell
+curl.exe --proxy http://192.9.200.25:3128 http://217.142.228.117/relay/health
 ```
 
 ## Coding Guidance

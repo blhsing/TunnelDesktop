@@ -3,3 +3,5 @@ bin/
 obj/
 *.exe
 *.syso
+__pycache__/
+*.pyc
