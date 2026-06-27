@@ -65,14 +65,34 @@ function Render-ClientIcon {
     $hullBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 255 230 109 79))
     $waveBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 235 105 210 199))
     $screenShineBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 34 255 255 255))
+    $skySheenBrush = New-Object System.Drawing.SolidBrush -ArgumentList @((New-Argb 22 255 255 255))
 
     $shadowOffset = [single] ([Math]::Max(1.0, $scale * 0.022))
 
     $currentPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 48 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.010)))
     $currentPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
     $currentPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $softCurrentPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 36 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.006)))
+    $softCurrentPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $softCurrentPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $screenRimPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 52 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.005)))
+    $screenRimPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $screenRimPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $keelPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 58 113 42 46), [single] ([Math]::Max(1.0, $scale * 0.008)))
+    $keelPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $keelPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $glintPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 92 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.006)))
+    $glintPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $glintPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $skySheen = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $skySheen.AddBezier((New-PointF ($scale * 0.06) ($scale * 0.31)), (New-PointF ($scale * 0.26) ($scale * 0.17)), (New-PointF ($scale * 0.62) ($scale * 0.17)), (New-PointF ($scale * 0.95) ($scale * 0.08)))
+    $skySheen.AddLine((New-PointF ($scale * 0.98) ($scale * 0.20)), (New-PointF ($scale * 0.98) ($scale * 0.20)))
+    $skySheen.AddBezier((New-PointF ($scale * 0.98) ($scale * 0.20)), (New-PointF ($scale * 0.66) ($scale * 0.31)), (New-PointF ($scale * 0.29) ($scale * 0.30)), (New-PointF ($scale * 0.07) ($scale * 0.43)))
+    $skySheen.CloseFigure()
     $graphics.SetClip($outer)
+    $graphics.FillPath($skySheenBrush, $skySheen)
     $graphics.DrawBezier($currentPen, (New-PointF ($scale * 0.11) ($scale * 0.32)), (New-PointF ($scale * 0.28) ($scale * 0.20)), (New-PointF ($scale * 0.48) ($scale * 0.26)), (New-PointF ($scale * 0.63) ($scale * 0.16)))
+    $graphics.DrawBezier($softCurrentPen, (New-PointF ($scale * 0.65) ($scale * 0.29)), (New-PointF ($scale * 0.76) ($scale * 0.22)), (New-PointF ($scale * 0.87) ($scale * 0.25)), (New-PointF ($scale * 0.96) ($scale * 0.18)))
     $graphics.DrawBezier($currentPen, (New-PointF ($scale * 0.39) ($scale * 0.90)), (New-PointF ($scale * 0.54) ($scale * 0.80)), (New-PointF ($scale * 0.75) ($scale * 0.86)), (New-PointF ($scale * 0.95) ($scale * 0.73)))
     $graphics.ResetClip()
 
@@ -94,6 +114,7 @@ function Render-ClientIcon {
     ))
     $graphics.SetClip($screen)
     $graphics.FillPath($screenShineBrush, $screenShine)
+    $graphics.DrawLine($screenRimPen, (New-PointF ($scale * 0.38) ($scale * 0.27)), (New-PointF ($scale * 0.61) ($scale * 0.27)))
     $graphics.ResetClip()
 
     $stand = [System.Drawing.PointF[]] @(
@@ -123,6 +144,7 @@ function Render-ClientIcon {
     $hull.AddLine((New-PointF ($scale * 0.29) ($scale * 0.74)), (New-PointF ($scale * 0.18) ($scale * 0.62)))
     $hull.CloseFigure()
     $graphics.FillPath($hullBrush, $hull)
+    $graphics.DrawBezier($keelPen, (New-PointF ($scale * 0.35) ($scale * 0.74)), (New-PointF ($scale * 0.48) ($scale * 0.78)), (New-PointF ($scale * 0.64) ($scale * 0.77)), (New-PointF ($scale * 0.77) ($scale * 0.72)))
 
     $railPen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 215 255 255 255), [single] ([Math]::Max(1.2, $scale * 0.018)))
     $railPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
@@ -147,10 +169,12 @@ function Render-ClientIcon {
     $fineWavePen = New-Object System.Drawing.Pen -ArgumentList @((New-Argb 82 255 255 255), [single] ([Math]::Max(1.0, $scale * 0.007)))
     $fineWavePen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
     $fineWavePen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $graphics.DrawBezier($glintPen, (New-PointF ($scale * 0.16) ($scale * 0.85)), (New-PointF ($scale * 0.21) ($scale * 0.83)), (New-PointF ($scale * 0.27) ($scale * 0.83)), (New-PointF ($scale * 0.32) ($scale * 0.85)))
+    $graphics.DrawBezier($glintPen, (New-PointF ($scale * 0.69) ($scale * 0.89)), (New-PointF ($scale * 0.75) ($scale * 0.87)), (New-PointF ($scale * 0.82) ($scale * 0.88)), (New-PointF ($scale * 0.87) ($scale * 0.86)))
     $graphics.DrawBezier($fineWavePen, (New-PointF ($scale * 0.13) ($scale * 0.90)), (New-PointF ($scale * 0.31) ($scale * 0.86)), (New-PointF ($scale * 0.42) ($scale * 0.93)), (New-PointF ($scale * 0.61) ($scale * 0.89)))
     $graphics.ResetClip()
 
-    foreach ($item in @($bgBrush, $glowPen, $shadowBrush, $whiteBrush, $screenBrush, $hullBrush, $waveBrush, $screenShineBrush, $outer, $currentPen, $monitorShadow, $monitor, $screen, $screenShine, $base, $hullShadow, $hull, $railPen, $wave1, $wavePen, $fineWavePen)) {
+    foreach ($item in @($bgBrush, $glowPen, $shadowBrush, $whiteBrush, $screenBrush, $hullBrush, $waveBrush, $screenShineBrush, $skySheenBrush, $outer, $currentPen, $softCurrentPen, $screenRimPen, $keelPen, $glintPen, $skySheen, $monitorShadow, $monitor, $screen, $screenShine, $base, $hullShadow, $hull, $railPen, $wave1, $wavePen, $fineWavePen)) {
         if ($null -ne $item) {
             $item.Dispose()
         }

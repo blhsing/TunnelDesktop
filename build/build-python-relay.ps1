@@ -9,6 +9,35 @@ $vendor = Join-Path $root 'dist/python-relay/vendor-linux-cp39'
 $vendoredPublish = Join-Path $root 'dist/python-relay/publish-linux-cp39-vendored'
 $vendoredZip = Join-Path $root 'dist/python-relay/deskferry-python-relay-linux-cp39-vendored.zip'
 
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+function New-PortableZip {
+    param(
+        [string] $SourceDirectory,
+        [string] $DestinationPath
+    )
+
+    if (Test-Path -LiteralPath $DestinationPath) {
+        Remove-Item -LiteralPath $DestinationPath -Force
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DestinationPath) | Out-Null
+
+    $stream = [System.IO.File]::Open($DestinationPath, [System.IO.FileMode]::Create)
+    $archive = New-Object System.IO.Compression.ZipArchive -ArgumentList @($stream, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $sourceRoot = (Resolve-Path -LiteralPath $SourceDirectory).ProviderPath.TrimEnd('\', '/')
+        Get-ChildItem -LiteralPath $SourceDirectory -Recurse -File | ForEach-Object {
+            $relative = $_.FullName.Substring($sourceRoot.Length).TrimStart('\', '/').Replace('\', '/')
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $relative, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+        }
+    }
+    finally {
+        $archive.Dispose()
+        $stream.Dispose()
+    }
+}
+
 Push-Location $root
 try {
     python -m pytest relay/python/tests
@@ -22,14 +51,10 @@ try {
     Copy-Item -LiteralPath (Join-Path $source 'requirements.txt') -Destination $publish
     Copy-Item -LiteralPath (Join-Path $source 'startup.sh') -Destination $publish
 
-    if (Test-Path -LiteralPath $zip) {
-        Remove-Item -LiteralPath $zip -Force
-    }
     Get-ChildItem -LiteralPath (Split-Path -Parent $zip) -Filter 'tunneldesktop-python-relay*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
         Remove-Item -LiteralPath $_.FullName -Force
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $zip) | Out-Null
-    Compress-Archive -Path (Join-Path $publish '*') -DestinationPath $zip -Force
+    New-PortableZip -SourceDirectory $publish -DestinationPath $zip
     Write-Host "built $zip"
 
     if (Test-Path -LiteralPath $vendor) {
@@ -50,10 +75,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $source 'startup.sh') -Destination $vendoredPublish
     Copy-Item -LiteralPath $vendor -Destination (Join-Path $vendoredPublish 'vendor') -Recurse
 
-    if (Test-Path -LiteralPath $vendoredZip) {
-        Remove-Item -LiteralPath $vendoredZip -Force
-    }
-    Compress-Archive -Path (Join-Path $vendoredPublish '*') -DestinationPath $vendoredZip -Force
+    New-PortableZip -SourceDirectory $vendoredPublish -DestinationPath $vendoredZip
     Write-Host "built $vendoredZip"
 }
 finally {
