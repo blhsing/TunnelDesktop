@@ -60,13 +60,6 @@ final class RelayUrls {
         }
     }
 
-    static String statusUrl(String relayUrl) throws URISyntaxException {
-        URI uri = new URI(normalizeRelayUrl(relayUrl));
-        String room = roomToken(relayUrl, "");
-        String query = room.isEmpty() || "default".equals(room) ? null : "room=" + room;
-        return new URI(uri.getScheme(), uri.getUserInfo(), uri.getHost(), uri.getPort(), "/relay/status", query, null).toString();
-    }
-
     static String roomToken(String relayUrl, String configuredToken) {
         String token = configuredToken == null ? "" : configuredToken.trim();
         if (!token.isEmpty()) {

@@ -9,9 +9,6 @@ final class HomePrefs {
     static final String PREF_LOCAL_PORT = "local_port";
     static final int DEFAULT_LOCAL_PORT = 3389;
 
-    private static final int LEGACY_DEFAULT_LOCAL_PORT = 3390;
-    private static final String PREF_DEFAULT_PORT_MIGRATED = "default_port_3389_migrated";
-
     private HomePrefs() {
     }
 
@@ -20,17 +17,7 @@ final class HomePrefs {
     }
 
     static int loadLocalPort(Context context) {
-        SharedPreferences prefs = prefs(context);
-        int port = prefs.getInt(PREF_LOCAL_PORT, DEFAULT_LOCAL_PORT);
-        if (!prefs.getBoolean(PREF_DEFAULT_PORT_MIGRATED, false)) {
-            SharedPreferences.Editor editor = prefs.edit().putBoolean(PREF_DEFAULT_PORT_MIGRATED, true);
-            if (port == LEGACY_DEFAULT_LOCAL_PORT) {
-                port = DEFAULT_LOCAL_PORT;
-                editor.putInt(PREF_LOCAL_PORT, port);
-            }
-            editor.apply();
-        }
-        return sanitizePort(port);
+        return sanitizePort(prefs(context).getInt(PREF_LOCAL_PORT, DEFAULT_LOCAL_PORT));
     }
 
     static void save(Context context, String relayUrl, int port) {
@@ -38,7 +25,6 @@ final class HomePrefs {
                 .edit()
                 .putString(PREF_RELAY_URL, relayUrl)
                 .putInt(PREF_LOCAL_PORT, sanitizePort(port))
-                .putBoolean(PREF_DEFAULT_PORT_MIGRATED, true)
                 .apply();
     }
 

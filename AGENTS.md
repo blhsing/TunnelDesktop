@@ -17,6 +17,7 @@ TunnelDesktop is a Go + .NET + Python + Android project for an outbound-only RDP
 - The Android app is a home-agent client only: it listens on Android loopback and connects out to the relay; it must not become a phone-hosted relay.
 - The Windows home app may keep a lightweight `home-agent` WebSocket open for dashboard presence, but RDP data uses `client` sockets.
 - The Android home app may also keep a lightweight `home-agent` WebSocket open for dashboard presence while its foreground service is running.
+- Android relay status should use the relay `dashboard` WebSocket stream, not HTTP polling.
 - The Windows home app should remain control-panel/tray-first. Console mode is debug-only.
 - The Windows home app should listen on loopback by default, normally `127.0.0.1:3390`.
 - `cmd/agent` must remain Windows-service-first. Console mode is debug-only.

@@ -189,13 +189,13 @@ Install the debug-signed APK:
 dist\android\tunneldesktop-home-android-debug.apk
 ```
 
-Open TunnelDesktop Home, enter the same relay room URL as the work agent, keep the local RDP port at `3389`, and start the tunnel. Fresh installs use `3389` by default, and upgrades from the old app default migrate `3390` to `3389`. In an Android RDP client, connect to:
+Open TunnelDesktop Home, enter the same relay room URL as the work agent, keep the local RDP port at `3389`, and start the tunnel. In an Android RDP client, connect to:
 
 ```text
 127.0.0.1:3389
 ```
 
-The Android app keeps the tunnel alive through a foreground service while you switch to the RDP client. It also maintains the same `home-agent` presence socket used by the relay dashboard.
+The Android app keeps the tunnel alive through a foreground service while you switch to the RDP client. It maintains the same `home-agent` presence socket used by the relay dashboard and a `dashboard` WebSocket for live relay status updates.
 
 ## Deliverables
 
@@ -299,7 +299,7 @@ It:
 
 ### Android Home App
 
-`android-home/` is the Android home endpoint from the `v0.3.6` release. It is not an RDP client by itself; it provides the loopback tunnel that an Android RDP client uses.
+`android-home/` is the Android home endpoint. It is not an RDP client by itself; it provides the loopback tunnel that an Android RDP client uses.
 
 It provides:
 
@@ -308,6 +308,7 @@ It provides:
 - A loopback RDP listener, normally `127.0.0.1:3389`.
 - One outbound `client` WebSocket per local RDP connection.
 - A persistent `home-agent` presence WebSocket while the service is running.
+- A persistent `dashboard` WebSocket for real-time work-agent and stream status.
 
 Good free Android RDP client options include Microsoft's Remote Desktop/Windows App client and the open-source FreeRDP-based aFreeRDP client. Configure the RDP client to connect to the TunnelDesktop local target shown in the Android app.
 

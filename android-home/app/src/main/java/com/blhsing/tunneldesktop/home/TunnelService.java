@@ -17,7 +17,6 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.URI;
 import java.net.URISyntaxException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -28,8 +27,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import okhttp3.Call;
-import okhttp3.Callback;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -61,6 +58,7 @@ public class TunnelService extends Service {
     private Thread presenceThread;
     private Thread statusThread;
     private WebSocket presenceSocket;
+    private WebSocket statusSocket;
     private volatile boolean running;
     private volatile String relayUrl = RelayUrls.DEFAULT_RELAY_URL;
     private volatile int localPort = HomePrefs.DEFAULT_LOCAL_PORT;
@@ -155,6 +153,7 @@ public class TunnelService extends Service {
     private void stopTunnelLocked() {
         running = false;
         closePresenceSocket();
+        closeStatusSocket();
         closeQuietly(serverSocket);
         serverSocket = null;
         for (BridgeSession session : sessions) {
@@ -229,57 +228,68 @@ public class TunnelService extends Service {
     private void startStatusLoop() {
         statusThread = new Thread(() -> {
             while (running) {
-                refreshRelayStatus();
-                sleepQuietly(4000);
+                CountDownLatch closed = new CountDownLatch(1);
+                try {
+                    Request request = webSocketRequest("dashboard");
+                    WebSocket socket = httpClient.newWebSocket(request, new WebSocketListener() {
+                        @Override
+                        public void onOpen(WebSocket webSocket, Response response) {
+                            statusSocket = webSocket;
+                            updateState(null, null, "Checking", "Relay status stream connected.");
+                        }
+
+                        @Override
+                        public void onMessage(WebSocket webSocket, String text) {
+                            refreshRelayStatus(text);
+                        }
+
+                        @Override
+                        public void onClosed(WebSocket webSocket, int code, String reason) {
+                            closed.countDown();
+                        }
+
+                        @Override
+                        public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                            if (running) {
+                                updateState(null, null, "Check relay", "Relay status stream: " + t.getMessage());
+                            }
+                            closed.countDown();
+                        }
+                    });
+                    statusSocket = socket;
+                    closed.await();
+                } catch (Exception ex) {
+                    if (running) {
+                        updateState(null, null, "Check relay", "Relay status stream: " + ex.getMessage());
+                    }
+                } finally {
+                    closeStatusSocket();
+                }
+                sleepQuietly(1500);
             }
         }, "TunnelDesktop-Android-Status");
         statusThread.start();
     }
 
-    private void refreshRelayStatus() {
-        String statusUrl;
+    private void refreshRelayStatus(String payload) {
         try {
-            statusUrl = RelayUrls.statusUrl(relayUrl);
-        } catch (URISyntaxException ex) {
-            updateState(null, null, "Invalid URL", ex.getMessage());
-            return;
+            JSONObject root = new JSONObject(payload);
+            JSONArray rooms = root.optJSONArray("rooms");
+            int waiting = 0;
+            int active = 0;
+            if (rooms != null) {
+                for (int i = 0; i < rooms.length(); i++) {
+                    JSONObject room = rooms.getJSONObject(i);
+                    waiting += room.optInt("waiting_agents", 0);
+                    active += room.optInt("active_pairs", 0);
+                }
+            }
+            boolean online = waiting + active > 0;
+            String detail = waiting + " waiting work sockets, " + active + " active streams.";
+            updateState(null, null, online ? "Connected" : "Waiting", detail);
+        } catch (Exception ex) {
+            updateState(null, null, "Check relay", "Relay status stream: " + ex.getMessage());
         }
-
-        Request request = new Request.Builder().url(statusUrl).get().build();
-        httpClient.newCall(request).enqueue(new Callback() {
-            @Override
-            public void onFailure(Call call, IOException e) {
-                if (running) {
-                    updateState(null, null, "Check relay", "Relay status: " + e.getMessage());
-                }
-            }
-
-            @Override
-            public void onResponse(Call call, Response response) {
-                try (Response ignored = response) {
-                    if (!response.isSuccessful() || response.body() == null) {
-                        updateState(null, null, "Check relay", "Relay status: HTTP " + response.code());
-                        return;
-                    }
-                    JSONObject root = new JSONObject(response.body().string());
-                    JSONArray rooms = root.optJSONArray("rooms");
-                    int waiting = 0;
-                    int active = 0;
-                    if (rooms != null) {
-                        for (int i = 0; i < rooms.length(); i++) {
-                            JSONObject room = rooms.getJSONObject(i);
-                            waiting += room.optInt("waiting_agents", 0);
-                            active += room.optInt("active_pairs", 0);
-                        }
-                    }
-                    boolean online = waiting + active > 0;
-                    String detail = waiting + " waiting work sockets, " + active + " active streams.";
-                    updateState(null, null, online ? "Connected" : "Waiting", detail);
-                } catch (Exception ex) {
-                    updateState(null, null, "Check relay", "Relay status: " + ex.getMessage());
-                }
-            }
-        });
     }
 
     private Request webSocketRequest(String role) throws URISyntaxException {
@@ -289,7 +299,7 @@ public class TunnelService extends Service {
                 .url(endpoint)
                 .header("Authorization", "Bearer " + token)
                 .header("X-TunnelDesktop-Role", role)
-                .header("User-Agent", "TunnelDesktop-Android/0.1")
+                .header("User-Agent", "TunnelDesktop-Android/0.4.2")
                 .build();
     }
 
@@ -377,6 +387,14 @@ public class TunnelService extends Service {
     private void closePresenceSocket() {
         WebSocket socket = presenceSocket;
         presenceSocket = null;
+        if (socket != null) {
+            socket.close(1000, "stopped");
+        }
+    }
+
+    private void closeStatusSocket() {
+        WebSocket socket = statusSocket;
+        statusSocket = null;
         if (socket != null) {
             socket.close(1000, "stopped");
         }
