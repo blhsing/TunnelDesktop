@@ -1,6 +1,9 @@
 package tunnel
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestWebSocketEndpointUsesRelayPath(t *testing.T) {
 	endpoint, err := WebSocketEndpoint("https://test-officialwebsite.azurewebsites.net/relay/")
@@ -39,5 +42,33 @@ func TestWebSocketEndpointDefaultsToRelayPath(t *testing.T) {
 	want := "wss://test-officialwebsite.azurewebsites.net/relay/ws"
 	if endpoint != want {
 		t.Fatalf("endpoint = %q, want %q", endpoint, want)
+	}
+}
+
+func TestHTTPRelayThroughProxyUsesConnectTunnel(t *testing.T) {
+	client := webSocketHTTPClient("http://217.142.228.117/relay/b", "http://192.9.200.25:3128")
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.DialContext == nil {
+		t.Fatal("DialContext is nil, want proxy CONNECT tunnel dialer")
+	}
+	if transport.Proxy != nil {
+		t.Fatal("Proxy is set, want direct WebSocket handshake over CONNECT tunnel")
+	}
+}
+
+func TestHTTPSRelayThroughProxyUsesStandardProxyTransport(t *testing.T) {
+	client := webSocketHTTPClient("https://test-officialwebsite.azurewebsites.net/relay/b", "http://192.9.200.25:3128")
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.DialContext != nil {
+		t.Fatal("DialContext is set, want standard HTTPS proxy transport")
+	}
+	if transport.Proxy == nil {
+		t.Fatal("Proxy is nil, want standard HTTPS proxy transport")
 	}
 }

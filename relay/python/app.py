@@ -663,7 +663,7 @@ def dashboard_html(room: str) -> str:
         <p id="workDetail" class="subtle">Waiting for status.</p>
       </div>
       <div class="card">
-        <div class="label">Home app</div>
+        <div class="label">Home side</div>
         <div id="homeStatus" class="value warn">Checking</div>
         <p id="homeDetail" class="subtle">Waiting for status.</p>
       </div>
@@ -678,7 +678,7 @@ def dashboard_html(room: str) -> str:
         <tr>
           <th>Room</th>
           <th>Work Agent</th>
-          <th>Home App</th>
+          <th>Home Side</th>
           <th>Active Pairs</th>
           <th>Last Client</th>
         </tr>
@@ -734,10 +734,11 @@ def dashboard_html(room: str) -> str:
       const waitingAgents = rooms.reduce((sum, r) => sum + (r.waiting_agents || 0), 0);
       const activePairs = rooms.reduce((sum, r) => sum + (r.active_pairs || 0), 0);
       const homeAgents = rooms.filter(r => r.home_agent_connected).length;
+      const homeActiveRooms = rooms.filter(r => r.home_agent_connected || (r.active_pairs || 0) > 0).length;
       setValue(workStatus, waitingAgents + activePairs > 0 ? "Connected" : "Waiting", waitingAgents + activePairs > 0 ? "ok" : "warn");
       workDetail.textContent = `${{waitingAgents}} idle work sockets, ${{activePairs}} paired streams.`;
-      setValue(homeStatus, homeAgents > 0 ? "Connected" : "Waiting", homeAgents > 0 ? "ok" : "warn");
-      homeDetail.textContent = `${{homeAgents}} home app status connection${{homeAgents === 1 ? "" : "s"}}.`;
+      setValue(homeStatus, homeActiveRooms > 0 ? "Active" : "Waiting", homeActiveRooms > 0 ? "ok" : "warn");
+      homeDetail.textContent = `${{homeAgents}} presence socket${{homeAgents === 1 ? "" : "s"}}, ${{activePairs}} active RDP stream${{activePairs === 1 ? "" : "s"}}.`;
       streamStatus.textContent = activePairs.toString();
       streamDetail.textContent = activePairs === 0 ? "No active RDP streams." : `${{activePairs}} RDP stream${{activePairs === 1 ? "" : "s"}} bridged.`;
       if (rooms.length === 0) {{
@@ -746,10 +747,16 @@ def dashboard_html(room: str) -> str:
       }}
       roomsBody.innerHTML = rooms.map(r => {{
         const workConnected = (r.waiting_agents || 0) + (r.active_pairs || 0) > 0;
+        const homePresence = !!r.home_agent_connected;
+        const streamActive = (r.active_pairs || 0) > 0;
+        const homeState = homePresence ? "presence" : (streamActive ? "active stream" : "waiting");
+        const homeInfo = homePresence
+          ? `${{esc(r.home_agent_remote || "")}}<br>${{esc(fmt(r.home_agent_connected_at))}}`
+          : `${{r.active_pairs || 0}} active<br>${{esc(fmt(r.last_client_connected_at))}}`;
         return `<tr>
           <td><code>${{esc(r.id)}}</code></td>
           <td>${{pill(workConnected, workConnected ? "connected" : "waiting")}}<br><span class="subtle">${{r.waiting_agents || 0}} idle<br>${{esc(fmt(r.last_agent_connected_at))}}</span></td>
-          <td>${{pill(!!r.home_agent_connected, r.home_agent_connected ? "connected" : "waiting")}}<br><span class="subtle">${{esc(r.home_agent_remote || "")}}<br>${{esc(fmt(r.home_agent_connected_at))}}</span></td>
+          <td>${{pill(homePresence || streamActive, homeState)}}<br><span class="subtle">${{homeInfo}}</span></td>
           <td>${{r.active_pairs || 0}}<br><span class="subtle">${{r.total_pairs || 0}} total</span></td>
           <td><span class="subtle">${{esc(r.last_client_remote || "")}}<br>${{esc(fmt(r.last_client_connected_at))}}</span></td>
         </tr>`;

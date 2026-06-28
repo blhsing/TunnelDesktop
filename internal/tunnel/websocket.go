@@ -1,8 +1,10 @@
 package tunnel
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
@@ -170,9 +172,86 @@ func webSocketHTTPClient(relayAddr, proxySpec string) *http.Client {
 			MinVersion: tls.VersionTLS12,
 			ServerName: HostFromRelayAddress(relayAddr),
 		},
-		Proxy: proxyFunc(relayAddr, proxySpec),
 	}
+	if endpoint, err := WebSocketEndpoint(relayAddr); err == nil {
+		if endpointURL, err := url.Parse(endpoint); err == nil && endpointURL.Scheme == "ws" {
+			proxyURL, err := webSocketProxyURL(endpointURL.Host, proxySpec)
+			if err == nil && proxyURL != nil {
+				transport.DialContext = proxyConnectDialContext(proxyURL)
+				return &http.Client{Transport: transport}
+			}
+		}
+	}
+	transport.Proxy = proxyFunc(relayAddr, proxySpec)
 	return &http.Client{Transport: transport}
+}
+
+func webSocketProxyURL(targetAddr, proxySpec string) (*url.URL, error) {
+	spec := strings.TrimSpace(proxySpec)
+	if spec == "" || strings.EqualFold(spec, "direct") {
+		return nil, nil
+	}
+	if strings.EqualFold(spec, "env") || strings.EqualFold(spec, "auto") {
+		return resolveProxyURL(targetAddr, spec)
+	}
+	return resolveProxyURL(targetAddr, spec)
+}
+
+func proxyConnectDialContext(proxyURL *url.URL) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		var dialer net.Dialer
+		conn, err := dialer.DialContext(ctx, network, canonicalProxyAddr(proxyURL))
+		if err != nil {
+			return nil, err
+		}
+		if err := writeProxyConnect(conn, proxyURL, address); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("read proxy CONNECT response: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			conn.Close()
+			return nil, fmt.Errorf("proxy CONNECT %s via %s failed: %s", address, proxyURLForLog(proxyURL), resp.Status)
+		}
+		return conn, nil
+	}
+}
+
+func writeProxyConnect(conn net.Conn, proxyURL *url.URL, address string) error {
+	var builder strings.Builder
+	builder.WriteString("CONNECT ")
+	builder.WriteString(address)
+	builder.WriteString(" HTTP/1.1\r\nHost: ")
+	builder.WriteString(address)
+	builder.WriteString("\r\nUser-Agent: DeskFerry/0.2\r\nProxy-Connection: Keep-Alive\r\n")
+	if proxyURL.User != nil {
+		username := proxyURL.User.Username()
+		password, _ := proxyURL.User.Password()
+		token := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		builder.WriteString("Proxy-Authorization: Basic ")
+		builder.WriteString(token)
+		builder.WriteString("\r\n")
+	}
+	builder.WriteString("\r\n")
+	_, err := conn.Write([]byte(builder.String()))
+	return err
+}
+
+func canonicalProxyAddr(proxyURL *url.URL) string {
+	if _, _, err := net.SplitHostPort(proxyURL.Host); err == nil {
+		return proxyURL.Host
+	}
+	switch proxyURL.Scheme {
+	case "https":
+		return net.JoinHostPort(proxyURL.Host, "443")
+	default:
+		return net.JoinHostPort(proxyURL.Host, "80")
+	}
 }
 
 func proxyFunc(relayAddr, proxySpec string) func(*http.Request) (*url.URL, error) {

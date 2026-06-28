@@ -165,7 +165,7 @@ Useful checks:
 .\deskferry-agent-windows-amd64.exe -self-test -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
 ```
 
-WebSocket mode uses standard proxy environment variables by default, such as `HTTP_PROXY` and `HTTPS_PROXY`. Use `-proxy http://proxy.example:8080` to force a proxy, or `-proxy direct` to bypass proxy discovery.
+WebSocket mode uses standard proxy environment variables by default, such as `HTTP_PROXY` and `HTTPS_PROXY`. Use `-proxy http://proxy.example:8080` to force a proxy, or `-proxy direct` to bypass proxy discovery. For plain `http://` relay URLs behind a corporate proxy, DeskFerry opens an HTTP `CONNECT` tunnel first so the WebSocket upgrade reaches the relay unchanged.
 
 ### 5. Run Windows Home App
 
@@ -242,7 +242,7 @@ Roles:
 - `probe`: self-test connection.
 - `dashboard`: browser status stream.
 
-The dashboard shows work-agent presence, home-app presence, active stream counts, total stream count, and recent remote addresses. It also serves the DeskFerry icon as `/relay/icon.svg` for favicon and header branding.
+The dashboard shows work-agent presence, home-side activity, active stream counts, total stream count, and recent remote addresses. Home-side activity is active when either the lightweight home-app presence socket is connected or an RDP stream is currently bridged. It also serves the DeskFerry icon as `/relay/icon.svg` for favicon and header branding.
 
 ### Python Relay Web Service
 
@@ -445,6 +445,7 @@ Self-test checks local RDP and then opens a `probe` WebSocket to each configured
 Common causes:
 
 - Corporate proxy blocks `CONNECT test-officialwebsite.azurewebsites.net:443`.
+- Corporate proxy strips WebSocket upgrades unless the relay connection is tunneled with `CONNECT`.
 - Proxy requires authentication not supported by the service account.
 - Azure App Service WebSockets are disabled.
 - The Azure relay has not been deployed or is not running.
