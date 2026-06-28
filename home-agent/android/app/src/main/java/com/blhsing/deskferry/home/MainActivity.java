@@ -39,7 +39,8 @@ public class MainActivity extends Activity {
         }
     };
 
-    private EditText relayUrlField;
+    private EditText primaryRelayUrlField;
+    private EditText fallbackRelayUrlsField;
     private EditText localPortField;
     private TextView tunnelStatus;
     private TextView workStatus;
@@ -117,8 +118,10 @@ public class MainActivity extends Activity {
         root.addView(configCard, cardParams());
 
         configCard.addView(sectionTitle("Connection"));
-        relayUrlField = field("Primary relay URL; semicolon fallbacks");
-        configCard.addView(relayUrlField, matchWrap());
+        primaryRelayUrlField = field("Primary relay URL");
+        configCard.addView(primaryRelayUrlField, matchWrap());
+        fallbackRelayUrlsField = multiLineField("Fallback relay URLs");
+        configCard.addView(fallbackRelayUrlsField, matchWrap());
         localPortField = field("Local RDP port");
         localPortField.setInputType(InputType.TYPE_CLASS_NUMBER);
         configCard.addView(localPortField, matchWrap());
@@ -187,7 +190,14 @@ public class MainActivity extends Activity {
     }
 
     private void loadPreferences() {
-        relayUrlField.setText(HomePrefs.loadRelayUrl(this));
+        List<String> relayUrls;
+        try {
+            relayUrls = RelayUrls.normalizeRelayUrls(HomePrefs.loadRelayUrl(this));
+        } catch (URISyntaxException ex) {
+            relayUrls = java.util.Collections.singletonList(RelayUrls.DEFAULT_RELAY_URL);
+        }
+        primaryRelayUrlField.setText(relayUrls.get(0));
+        fallbackRelayUrlsField.setText(RelayUrls.joinRelayUrls(relayUrls.subList(1, relayUrls.size())));
         localPortField.setText(String.valueOf(HomePrefs.loadLocalPort(this)));
     }
 
@@ -204,14 +214,29 @@ public class MainActivity extends Activity {
         String relayUrl;
         int port;
         try {
-            List<String> relayUrls = RelayUrls.normalizeRelayUrls(relayUrlField.getText().toString());
+            List<String> relayUrls = new java.util.ArrayList<>();
+            String primaryRelayUrl = primaryRelayUrlField.getText().toString().trim();
+            if (!primaryRelayUrl.isEmpty()) {
+                relayUrls.add(RelayUrls.normalizeRelayUrl(primaryRelayUrl));
+            }
+            relayUrls.addAll(RelayUrls.normalizeRelayUrls(fallbackRelayUrlsField.getText().toString(), false));
+            if (relayUrls.isEmpty()) {
+                relayUrls.add(RelayUrls.DEFAULT_RELAY_URL);
+            }
             relayUrl = RelayUrls.joinRelayUrls(relayUrls);
             port = parsePort(localPortField.getText().toString());
         } catch (Exception ex) {
             Toast.makeText(this, ex.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
-        relayUrlField.setText(relayUrl);
+        List<String> relayUrls;
+        try {
+            relayUrls = RelayUrls.normalizeRelayUrls(relayUrl);
+        } catch (URISyntaxException ex) {
+            relayUrls = java.util.Collections.singletonList(RelayUrls.DEFAULT_RELAY_URL);
+        }
+        primaryRelayUrlField.setText(relayUrls.get(0));
+        fallbackRelayUrlsField.setText(RelayUrls.joinRelayUrls(relayUrls.subList(1, relayUrls.size())));
         localPortField.setText(String.valueOf(port));
         savePreferences(relayUrl, port);
 
@@ -244,7 +269,8 @@ public class MainActivity extends Activity {
         messageView.setText(state.lastMessage);
         logView.setText(state.log);
         startButton.setText(state.running ? "Stop Tunnel" : "Start Tunnel");
-        relayUrlField.setEnabled(!state.running);
+        primaryRelayUrlField.setEnabled(!state.running);
+        fallbackRelayUrlsField.setEnabled(!state.running);
         localPortField.setEnabled(!state.running);
     }
 
@@ -268,9 +294,9 @@ public class MainActivity extends Activity {
     }
 
     private void openDashboard() {
-        String relayUrl = relayUrlField.getText().toString();
+        String relayUrl = primaryRelayUrlField.getText().toString();
         try {
-            relayUrl = RelayUrls.joinRelayUrls(RelayUrls.normalizeRelayUrls(relayUrl));
+            relayUrl = RelayUrls.normalizeRelayUrl(relayUrl);
         } catch (URISyntaxException ignored) {
         }
         startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(RelayUrls.dashboardUrl(relayUrl))));
@@ -299,6 +325,17 @@ public class MainActivity extends Activity {
         edit.setTextColor(color("#1F2933"));
         edit.setHintTextColor(color("#8A949E"));
         edit.setBackground(rounded("#FBFCFD", "#D7DEE3", 8));
+        return edit;
+    }
+
+    private EditText multiLineField(String hint) {
+        EditText edit = field(hint);
+        edit.setSingleLine(false);
+        edit.setMinLines(2);
+        edit.setMaxLines(4);
+        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_VARIATION_URI);
+        edit.setGravity(Gravity.TOP | Gravity.START);
+        edit.setMinHeight(dp(88));
         return edit;
     }
 

@@ -138,11 +138,7 @@ For the OCI relay, the equivalent room URL is:
 http://217.142.228.117/relay/workdesk
 ```
 
-Use the same room name everywhere. The work agent can use both URLs at the same time. Home apps can also use both URLs as a primary/fallback list, with the primary URL first:
-
-```text
-https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk
-```
+Use the same room name everywhere. The work agent can use both URLs at the same time. Home apps can also use both URLs as a primary/fallback list, with the primary URL entered first and fallback URLs entered below it.
 
 ### 4. Install Work Agent
 
@@ -158,7 +154,7 @@ Command-line install is also supported:
 
 ```powershell
 .\deskferry-agent-windows-amd64.exe -install -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
-.\deskferry-agent-windows-amd64.exe -install -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
+.\deskferry-agent-windows-amd64.exe -install -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk -relay-url http://217.142.228.117/relay/workdesk
 ```
 
 Useful checks:
@@ -166,18 +162,18 @@ Useful checks:
 ```powershell
 .\deskferry-agent-windows-amd64.exe -status
 .\deskferry-agent-windows-amd64.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
-.\deskferry-agent-windows-amd64.exe -self-test -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
+.\deskferry-agent-windows-amd64.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk -relay-url http://217.142.228.117/relay/workdesk
 ```
 
 WebSocket mode uses standard proxy environment variables by default, such as `HTTP_PROXY` and `HTTPS_PROXY`. Use `-proxy http://proxy.example:8080` to force a proxy, or `-proxy direct` to bypass proxy discovery. For plain `http://` relay URLs behind a corporate proxy, DeskFerry opens an HTTP `CONNECT` tunnel first so the WebSocket upgrade reaches the relay unchanged.
 
 ### 5. Run Windows Home App
 
-Start the Windows home app with the same room URL, or with a semicolon-separated primary/fallback URL list:
+Start the Windows home app, enter the primary room URL, and optionally add fallback room URLs in the fallback list:
 
 ```powershell
 .\deskferry-home-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
-.\deskferry-home-windows-amd64.exe -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
+.\deskferry-home-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk -relay-url http://217.142.228.117/relay/workdesk
 ```
 
 The app opens a friendly control panel and a notification-area icon. Click `Connect` to start the local RDP listener and open Remote Desktop. The default local listener is `127.0.0.1:3390`, avoiding Windows' normal local RDP port `3389`, and the app opens one outbound WebSocket to the first reachable relay for each local RDP session.
@@ -195,7 +191,7 @@ Choose the binary for your Mac:
 ```sh
 chmod +x ./deskferry-home-macos-arm64
 ./deskferry-home-macos-arm64 -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk -open-rdp
-./deskferry-home-macos-arm64 -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk" -open-rdp
+./deskferry-home-macos-arm64 -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk -relay-url http://217.142.228.117/relay/workdesk -open-rdp
 ```
 
 Use `deskferry-home-macos-amd64` on Intel Macs. The macOS home agent runs in the foreground, listens on `127.0.0.1:3389` by default, keeps the relay dashboard presence socket connected, and opens an `.rdp` profile when `-open-rdp` is supplied. If your RDP app does not open automatically, connect it manually to:
@@ -212,7 +208,7 @@ Install the debug-signed APK:
 dist\android\deskferry-home-android-debug.apk
 ```
 
-Open DeskFerry Home, enter the same relay room URL as the work agent, or a semicolon-separated primary/fallback URL list, keep the local RDP port at `3389`, and start the tunnel. In an Android RDP client, connect to:
+Open DeskFerry Home, enter the same primary relay room URL as the work agent, optionally add fallback URLs, keep the local RDP port at `3389`, and start the tunnel. In an Android RDP client, connect to:
 
 ```text
 127.0.0.1:3389
@@ -285,7 +281,7 @@ Default behavior:
 
 - `agent.exe` with no args uses the default relay room URL.
 - `-relay-url <url>` selects a named room.
-- `-relay-url` can be repeated or can contain comma, semicolon, or newline separated URLs.
+- `-relay-url` can be repeated to add more relay URLs.
 - The service keeps a small pool of idle outbound WebSockets per configured relay URL.
 - When any configured relay pairs a socket, the agent dials `127.0.0.1:3389` and pipes bytes.
 
@@ -293,7 +289,7 @@ Debug and operations:
 
 ```powershell
 .\agent.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
-.\agent.exe -console -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
+.\agent.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk -relay-url http://217.142.228.117/relay/workdesk
 .\agent.exe -self-test -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
 .\agent.exe -status
 .\agent.exe -uninstall

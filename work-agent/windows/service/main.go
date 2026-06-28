@@ -59,7 +59,7 @@ func main() {
 	var uninstallMode bool
 	var statusMode bool
 	var selfTestMode bool
-	flag.Var(&relayURLs, "relay-url", "relay service URL; repeat or separate multiple URLs with commas, semicolons, or newlines")
+	flag.Var(&relayURLs, "relay-url", "relay service URL; repeat to add more relay URLs")
 	flag.StringVar(&proxyFlag, "proxy", "", "HTTP proxy for Azure relay WebSocket, or direct/env/auto")
 	flag.StringVar(&rdpFlag, "rdp", "", "local RDP target")
 	flag.BoolVar(&consoleMode, "console", false, "run in the foreground for debugging")

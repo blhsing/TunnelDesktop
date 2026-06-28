@@ -37,6 +37,17 @@ type config struct {
 	Proxy      string
 }
 
+type relayURLFlag []string
+
+func (f *relayURLFlag) Set(value string) error {
+	*f = append(*f, splitRelayURLs(value)...)
+	return nil
+}
+
+func (f *relayURLFlag) String() string {
+	return joinRelayURLs([]string(*f))
+}
+
 type relaySnapshot struct {
 	Service string              `json:"service"`
 	Time    *time.Time          `json:"time"`
@@ -74,19 +85,19 @@ type relaySummary struct {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	var relayURL string
+	var relayURLs relayURLFlag
 	var listenAddr string
 	var proxyFlag string
 	var openRDP bool
 	var statusOnly bool
-	flag.StringVar(&relayURL, "relay-url", "", "relay room URL; separate primary and fallback URLs with semicolons")
+	flag.Var(&relayURLs, "relay-url", "relay room URL; repeat to add fallback URLs")
 	flag.StringVar(&listenAddr, "listen", "", "local RDP listen address")
 	flag.StringVar(&proxyFlag, "proxy", "", "proxy: env, direct, or http://host:port")
 	flag.BoolVar(&openRDP, "open-rdp", false, "open the local RDP profile after the tunnel starts")
 	flag.BoolVar(&statusOnly, "status", false, "print relay room status and exit")
 	flag.Parse()
 
-	cfg, err := loadConfig(relayURL, listenAddr, proxyFlag)
+	cfg, err := loadConfig(relayURLs.String(), listenAddr, proxyFlag)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -44,8 +44,12 @@ final class RelayUrls {
     }
 
     static List<String> normalizeRelayUrls(String value) throws URISyntaxException {
+        return normalizeRelayUrls(value, true);
+    }
+
+    static List<String> normalizeRelayUrls(String value, boolean useDefault) throws URISyntaxException {
         List<String> raw = splitRelayUrls(value);
-        if (raw.isEmpty()) {
+        if (raw.isEmpty() && useDefault) {
             raw = Collections.singletonList(DEFAULT_RELAY_URL);
         }
         ArrayList<String> out = new ArrayList<>();
@@ -72,7 +76,7 @@ final class RelayUrls {
         StringBuilder builder = new StringBuilder();
         for (String relayUrl : relayUrls) {
             if (builder.length() > 0) {
-                builder.append(';');
+                builder.append('\n');
             }
             builder.append(relayUrl);
         }

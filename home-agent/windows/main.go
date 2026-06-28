@@ -46,15 +46,27 @@ type config struct {
 	RDPUser    string   `json:"rdp_user,omitempty"`
 }
 
+type relayURLFlag []string
+
+func (f *relayURLFlag) Set(value string) error {
+	*f = append(*f, splitRelayURLs(value)...)
+	return nil
+}
+
+func (f *relayURLFlag) String() string {
+	return joinRelayURLs([]string(*f))
+}
+
 type clientApp struct {
 	mw *walk.MainWindow
 	ni *walk.NotifyIcon
 
-	relayURL   *walk.LineEdit
-	listenAddr *walk.LineEdit
-	proxy      *walk.LineEdit
-	rdpUser    *walk.LineEdit
-	rdpPass    *walk.LineEdit
+	relayPrimary   *walk.LineEdit
+	relayFallbacks *walk.TextEdit
+	listenAddr     *walk.LineEdit
+	proxy          *walk.LineEdit
+	rdpUser        *walk.LineEdit
+	rdpPass        *walk.LineEdit
 
 	tunnelStatus *walk.Label
 	workStatus   *walk.Label
@@ -118,19 +130,19 @@ type relaySummary struct {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	var relayURL string
+	var relayURLs relayURLFlag
 	var listenAddr string
 	var proxyFlag string
 	var consoleMode bool
 	var smokeTest bool
-	flag.StringVar(&relayURL, "relay-url", "", "relay room URL; separate primary and fallback URLs with semicolons")
+	flag.Var(&relayURLs, "relay-url", "relay room URL; repeat to add fallback URLs")
 	flag.StringVar(&listenAddr, "listen", "", "local RDP listen address")
 	flag.StringVar(&proxyFlag, "proxy", "", "proxy: env, direct, or http://host:port")
 	flag.BoolVar(&consoleMode, "console", false, "run in the foreground instead of the control panel")
 	flag.BoolVar(&smokeTest, "ui-smoke-test", false, "start and close the GUI")
 	flag.Parse()
 
-	cfg, err := loadConfig(relayURL, listenAddr, proxyFlag)
+	cfg, err := loadConfig(relayURLs.String(), listenAddr, proxyFlag)
 	if err != nil {
 		windowsMessageBox(appTitle(), err.Error(), windows.MB_OK|windows.MB_ICONERROR)
 		os.Exit(1)
@@ -194,8 +206,10 @@ func (a *clientApp) run(smokeTest bool) error {
 				Title:  "Connection",
 				Layout: Grid{Columns: 4, Spacing: 7},
 				Children: []Widget{
-					Label{Text: "Relay room URLs"},
-					LineEdit{AssignTo: &a.relayURL, Text: a.cfg.relayURLText(), CueBanner: defaultRelayURL + ";http://217.142.228.117/relay/workdesk", ColumnSpan: 3},
+					Label{Text: "Primary relay URL"},
+					LineEdit{AssignTo: &a.relayPrimary, Text: a.cfg.primaryRelayAddress(), CueBanner: defaultRelayURL, ColumnSpan: 3},
+					Label{Text: "Fallback relay URLs"},
+					TextEdit{AssignTo: &a.relayFallbacks, Text: a.cfg.fallbackRelayText(), VScroll: true, ColumnSpan: 3, MinSize: Size{Height: 58}},
 					Label{Text: "Local RDP address"},
 					LineEdit{AssignTo: &a.listenAddr, Text: a.cfg.ListenAddr, CueBanner: defaultListenAddr},
 					Label{Text: "Proxy"},
@@ -409,7 +423,8 @@ func (a *clientApp) saveFromUI(showMessage bool) error {
 
 func (a *clientApp) configFromUI() (config, error) {
 	cfg := config{
-		RelayAddr:  strings.TrimSpace(a.relayURL.Text()),
+		RelayAddr:  strings.TrimSpace(a.relayPrimary.Text()),
+		RelayAddrs: splitRelayURLs(a.relayFallbacks.Text()),
 		ListenAddr: strings.TrimSpace(a.listenAddr.Text()),
 		Proxy:      strings.TrimSpace(a.proxy.Text()),
 		RDPUser:    strings.TrimSpace(a.rdpUser.Text()),
@@ -434,7 +449,8 @@ func (a *clientApp) setConfig(cfg config) {
 	a.cfg = cfg
 	a.mu.Unlock()
 	a.onUI(func() {
-		_ = a.relayURL.SetText(cfg.relayURLText())
+		_ = a.relayPrimary.SetText(cfg.primaryRelayAddress())
+		_ = a.relayFallbacks.SetText(cfg.fallbackRelayText())
 		_ = a.listenAddr.SetText(cfg.ListenAddr)
 		_ = a.proxy.SetText(cfg.Proxy)
 		_ = a.rdpUser.SetText(cfg.RDPUser)
@@ -835,7 +851,8 @@ func saveSettingsConfig(cfg config) error {
 	}
 	data, err := json.MarshalIndent(config{
 		ListenAddr: cfg.ListenAddr,
-		RelayAddr:  cfg.relayURLText(),
+		RelayAddr:  cfg.primaryRelayAddress(),
+		RelayAddrs: cfg.relayAddresses(),
 		Proxy:      cfg.Proxy,
 		RDPUser:    cfg.RDPUser,
 	}, "", "  ")
@@ -1166,7 +1183,7 @@ func uniqueRelayURLs(values []string) []string {
 }
 
 func joinRelayURLs(values []string) string {
-	return strings.Join(uniqueRelayURLs(values), ";")
+	return strings.Join(uniqueRelayURLs(values), "\n")
 }
 
 func (c *config) setRelayAddresses(values []string) {
@@ -1185,6 +1202,18 @@ func (c config) relayAddresses() []string {
 
 func (c config) relayURLText() string {
 	return joinRelayURLs(c.relayAddresses())
+}
+
+func (c config) fallbackRelayAddresses() []string {
+	relays := c.relayAddresses()
+	if len(relays) <= 1 {
+		return nil
+	}
+	return relays[1:]
+}
+
+func (c config) fallbackRelayText() string {
+	return joinRelayURLs(c.fallbackRelayAddresses())
 }
 
 func (c config) primaryRelayAddress() string {

@@ -340,7 +340,7 @@ public class TunnelService extends Service {
                 .header("Authorization", "Bearer " + token)
                 .header("X-DeskFerry-Role", role)
                 .header("X-TunnelDesktop-Role", role)
-                .header("User-Agent", "DeskFerry-Android/0.5.3")
+                .header("User-Agent", "DeskFerry-Android/0.5.4")
                 .build();
     }
 
