@@ -24,6 +24,7 @@ import (
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
+	"github.com/lxn/win"
 	"golang.org/x/sys/windows"
 	"nhooyr.io/websocket"
 
@@ -61,12 +62,17 @@ type clientApp struct {
 	mw *walk.MainWindow
 	ni *walk.NotifyIcon
 
-	relayPrimary   *walk.LineEdit
-	relayFallbacks *walk.TextEdit
-	listenAddr     *walk.LineEdit
-	proxy          *walk.LineEdit
-	rdpUser        *walk.LineEdit
-	rdpPass        *walk.LineEdit
+	relayList   *walk.ListBox
+	relayEdit   *walk.LineEdit
+	relayAdd    *walk.PushButton
+	relayUpdate *walk.PushButton
+	relayDelete *walk.PushButton
+	relayUp     *walk.PushButton
+	relayDown   *walk.PushButton
+	listenAddr  *walk.LineEdit
+	proxy       *walk.LineEdit
+	rdpUser     *walk.LineEdit
+	rdpPass     *walk.LineEdit
 
 	tunnelStatus *walk.Label
 	workStatus   *walk.Label
@@ -83,13 +89,17 @@ type clientApp struct {
 	trayStop    *walk.Action
 	trayRDP     *walk.Action
 
-	mu           sync.Mutex
-	cfg          config
-	cancel       context.CancelFunc
-	listener     net.Listener
-	activeLocal  int
-	statusCancel context.CancelFunc
-	exiting      bool
+	mu              sync.Mutex
+	cfg             config
+	relayURLs       []string
+	relayDragIndex  int
+	relayDragStartY int
+	relayDragging   bool
+	cancel          context.CancelFunc
+	listener        net.Listener
+	activeLocal     int
+	statusCancel    context.CancelFunc
+	exiting         bool
 }
 
 type relaySnapshot struct {
@@ -156,7 +166,7 @@ func main() {
 		return
 	}
 
-	app := &clientApp{cfg: cfg}
+	app := &clientApp{cfg: cfg, relayDragIndex: -1}
 	if err := app.run(smokeTest); err != nil {
 		windowsMessageBox(appTitle(), err.Error(), windows.MB_OK|windows.MB_ICONERROR)
 		os.Exit(1)
@@ -206,10 +216,39 @@ func (a *clientApp) run(smokeTest bool) error {
 				Title:  "Connection",
 				Layout: Grid{Columns: 4, Spacing: 7},
 				Children: []Widget{
-					Label{Text: "Primary relay URL"},
-					LineEdit{AssignTo: &a.relayPrimary, Text: a.cfg.primaryRelayAddress(), CueBanner: defaultRelayURL, ColumnSpan: 3},
-					Label{Text: "Fallback relay URLs"},
-					TextEdit{AssignTo: &a.relayFallbacks, Text: a.cfg.fallbackRelayText(), VScroll: true, ColumnSpan: 3, MinSize: Size{Height: 58}},
+					Label{Text: "Relay URLs"},
+					Composite{
+						ColumnSpan: 3,
+						Layout:     VBox{Spacing: 6},
+						Children: []Widget{
+							ListBox{
+								AssignTo:              &a.relayList,
+								Model:                 a.cfg.relayAddresses(),
+								MinSize:               Size{Height: 74},
+								OnCurrentIndexChanged: a.relaySelectionChanged,
+								OnMouseDown:           a.relayListMouseDown,
+								OnMouseMove:           a.relayListMouseMove,
+								OnMouseUp:             a.relayListMouseUp,
+							},
+							Composite{
+								Layout: Grid{Columns: 4, Spacing: 6},
+								Children: []Widget{
+									Label{Text: "Selected URL"},
+									LineEdit{AssignTo: &a.relayEdit, CueBanner: defaultRelayURL, ColumnSpan: 3},
+								},
+							},
+							Composite{
+								Layout: Flow{Spacing: 6},
+								Children: []Widget{
+									PushButton{AssignTo: &a.relayAdd, Text: "Add", MinSize: Size{Width: 72, Height: 30}, OnClicked: a.addRelayURL},
+									PushButton{AssignTo: &a.relayUpdate, Text: "Update", MinSize: Size{Width: 82, Height: 30}, OnClicked: a.updateRelayURL},
+									PushButton{AssignTo: &a.relayDelete, Text: "Delete", MinSize: Size{Width: 78, Height: 30}, OnClicked: a.deleteRelayURL},
+									PushButton{AssignTo: &a.relayUp, Text: "Up", MinSize: Size{Width: 64, Height: 30}, OnClicked: func() { a.moveRelayURL(-1) }},
+									PushButton{AssignTo: &a.relayDown, Text: "Down", MinSize: Size{Width: 64, Height: 30}, OnClicked: func() { a.moveRelayURL(1) }},
+								},
+							},
+						},
+					},
 					Label{Text: "Local RDP address"},
 					LineEdit{AssignTo: &a.listenAddr, Text: a.cfg.ListenAddr, CueBanner: defaultListenAddr},
 					Label{Text: "Proxy"},
@@ -252,6 +291,7 @@ func (a *clientApp) run(smokeTest bool) error {
 	if err := window.Create(); err != nil {
 		return err
 	}
+	a.setRelayURLList(a.cfg.relayAddresses(), 0)
 	if err := a.setupNotifyIcon(); err != nil {
 		return err
 	}
@@ -301,6 +341,220 @@ func statusTile(title string, assignTo **walk.Label, initial string, width int) 
 			},
 		},
 	}
+}
+
+func (a *clientApp) relayURLListValues() []string {
+	return append([]string(nil), a.relayURLs...)
+}
+
+func (a *clientApp) setRelayURLList(values []string, selectIndex int) {
+	a.relayURLs = uniqueRelayURLs(values)
+	if len(a.relayURLs) == 0 {
+		selectIndex = -1
+	} else if selectIndex < 0 {
+		selectIndex = 0
+	} else if selectIndex >= len(a.relayURLs) {
+		selectIndex = len(a.relayURLs) - 1
+	}
+	if a.relayList != nil {
+		_ = a.relayList.SetModel(append([]string(nil), a.relayURLs...))
+		_ = a.relayList.SetCurrentIndex(selectIndex)
+	}
+	a.setRelayEditorFromIndex(selectIndex)
+	a.updateRelayButtons()
+}
+
+func (a *clientApp) setRelayEditorFromIndex(index int) {
+	if a.relayEdit == nil {
+		return
+	}
+	if index >= 0 && index < len(a.relayURLs) {
+		_ = a.relayEdit.SetText(a.relayURLs[index])
+		return
+	}
+	_ = a.relayEdit.SetText("")
+}
+
+func (a *clientApp) relaySelectionChanged() {
+	index := -1
+	if a.relayList != nil {
+		index = a.relayList.CurrentIndex()
+	}
+	a.setRelayEditorFromIndex(index)
+	a.updateRelayButtons()
+}
+
+func (a *clientApp) updateRelayButtons() {
+	if a.relayList == nil {
+		return
+	}
+	index := a.relayList.CurrentIndex()
+	hasSelection := index >= 0 && index < len(a.relayURLs)
+	if a.relayUpdate != nil {
+		a.relayUpdate.SetEnabled(hasSelection)
+	}
+	if a.relayDelete != nil {
+		a.relayDelete.SetEnabled(hasSelection)
+	}
+	if a.relayUp != nil {
+		a.relayUp.SetEnabled(hasSelection && index > 0)
+	}
+	if a.relayDown != nil {
+		a.relayDown.SetEnabled(hasSelection && index < len(a.relayURLs)-1)
+	}
+}
+
+func (a *clientApp) relayURLFromEditor() (string, error) {
+	if a.relayEdit == nil {
+		return "", errors.New("relay URL editor is not available")
+	}
+	return normalizeRelayURL(a.relayEdit.Text())
+}
+
+func (a *clientApp) addRelayURL() {
+	value, err := a.relayURLFromEditor()
+	if err != nil {
+		a.showError(err)
+		return
+	}
+	values := a.relayURLListValues()
+	for i, existing := range values {
+		if strings.EqualFold(existing, value) {
+			a.setRelayURLList(values, i)
+			return
+		}
+	}
+	values = append(values, value)
+	a.setRelayURLList(values, len(values)-1)
+}
+
+func (a *clientApp) updateRelayURL() {
+	index := -1
+	if a.relayList != nil {
+		index = a.relayList.CurrentIndex()
+	}
+	if index < 0 || index >= len(a.relayURLs) {
+		a.addRelayURL()
+		return
+	}
+	value, err := a.relayURLFromEditor()
+	if err != nil {
+		a.showError(err)
+		return
+	}
+	values := a.relayURLListValues()
+	values[index] = value
+	values = uniqueRelayURLs(values)
+	nextIndex := index
+	for i, existing := range values {
+		if strings.EqualFold(existing, value) {
+			nextIndex = i
+			break
+		}
+	}
+	a.setRelayURLList(values, nextIndex)
+}
+
+func (a *clientApp) deleteRelayURL() {
+	if a.relayList == nil {
+		return
+	}
+	index := a.relayList.CurrentIndex()
+	if index < 0 || index >= len(a.relayURLs) {
+		return
+	}
+	values := a.relayURLListValues()
+	values = append(values[:index], values[index+1:]...)
+	a.setRelayURLList(values, index)
+}
+
+func (a *clientApp) moveRelayURL(delta int) {
+	if a.relayList == nil {
+		return
+	}
+	index := a.relayList.CurrentIndex()
+	a.moveRelayURLTo(index, index+delta)
+}
+
+func (a *clientApp) moveRelayURLTo(from, to int) {
+	if from < 0 || from >= len(a.relayURLs) || to < 0 || to >= len(a.relayURLs) || from == to {
+		return
+	}
+	values := a.relayURLListValues()
+	value := values[from]
+	values = append(values[:from], values[from+1:]...)
+	if to >= len(values) {
+		values = append(values, value)
+	} else {
+		values = append(values[:to], append([]string{value}, values[to:]...)...)
+	}
+	a.setRelayURLList(values, to)
+}
+
+func (a *clientApp) relayListMouseDown(x, y int, button walk.MouseButton) {
+	if button != walk.LeftButton {
+		return
+	}
+	a.relayDragIndex = a.relayListIndexAt(x, y)
+	a.relayDragStartY = y
+	a.relayDragging = false
+	if a.relayDragIndex >= 0 {
+		_ = a.relayList.SetCurrentIndex(a.relayDragIndex)
+	}
+}
+
+func (a *clientApp) relayListMouseMove(_, y int, button walk.MouseButton) {
+	if button&walk.LeftButton == 0 || a.relayDragIndex < 0 {
+		return
+	}
+	if absInt(y-a.relayDragStartY) > 4 {
+		a.relayDragging = true
+	}
+}
+
+func (a *clientApp) relayListMouseUp(x, y int, button walk.MouseButton) {
+	if button != walk.LeftButton {
+		return
+	}
+	from := a.relayDragIndex
+	dragging := a.relayDragging
+	a.relayDragIndex = -1
+	a.relayDragging = false
+	if !dragging || from < 0 {
+		return
+	}
+	to := a.relayListIndexAt(x, y)
+	if to < 0 {
+		if y < 0 {
+			to = 0
+		} else {
+			to = len(a.relayURLs) - 1
+		}
+	}
+	a.moveRelayURLTo(from, to)
+}
+
+func (a *clientApp) relayListIndexAt(x, y int) int {
+	if a.relayList == nil || len(a.relayURLs) == 0 {
+		return -1
+	}
+	lParam := uintptr(uint32(uint16(x)) | uint32(uint16(y))<<16)
+	result := uint32(a.relayList.SendMessage(win.LB_ITEMFROMPOINT, 0, lParam))
+	if win.HIWORD(result) != 0 {
+		return -1
+	}
+	index := int(win.LOWORD(result))
+	if index < 0 || index >= len(a.relayURLs) {
+		return -1
+	}
+	return index
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func (a *clientApp) setupNotifyIcon() error {
@@ -422,12 +676,15 @@ func (a *clientApp) saveFromUI(showMessage bool) error {
 }
 
 func (a *clientApp) configFromUI() (config, error) {
+	relayURLs := a.relayURLListValues()
 	cfg := config{
-		RelayAddr:  strings.TrimSpace(a.relayPrimary.Text()),
-		RelayAddrs: splitRelayURLs(a.relayFallbacks.Text()),
+		RelayAddrs: relayURLs,
 		ListenAddr: strings.TrimSpace(a.listenAddr.Text()),
 		Proxy:      strings.TrimSpace(a.proxy.Text()),
 		RDPUser:    strings.TrimSpace(a.rdpUser.Text()),
+	}
+	if len(relayURLs) > 0 {
+		cfg.RelayAddr = relayURLs[0]
 	}
 	cfg.applyDefaults()
 	if normalized, err := normalizeRelayURLs(cfg.RelayAddr, cfg.RelayAddrs); err != nil {
@@ -449,8 +706,7 @@ func (a *clientApp) setConfig(cfg config) {
 	a.cfg = cfg
 	a.mu.Unlock()
 	a.onUI(func() {
-		_ = a.relayPrimary.SetText(cfg.primaryRelayAddress())
-		_ = a.relayFallbacks.SetText(cfg.fallbackRelayText())
+		a.setRelayURLList(cfg.relayAddresses(), 0)
 		_ = a.listenAddr.SetText(cfg.ListenAddr)
 		_ = a.proxy.SetText(cfg.Proxy)
 		_ = a.rdpUser.SetText(cfg.RDPUser)

@@ -15,7 +15,10 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
+import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -28,6 +31,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -39,8 +44,10 @@ public class MainActivity extends Activity {
         }
     };
 
-    private EditText primaryRelayUrlField;
-    private EditText fallbackRelayUrlsField;
+    private final ArrayList<String> relayUrls = new ArrayList<>();
+    private LinearLayout relayUrlList;
+    private EditText relayUrlAddField;
+    private Button relayAddButton;
     private EditText localPortField;
     private TextView tunnelStatus;
     private TextView workStatus;
@@ -51,6 +58,8 @@ public class MainActivity extends Activity {
     private TextView logView;
     private Button startButton;
     private String latestRdpAddress = RelayUrls.rdpAddress(HomePrefs.DEFAULT_LOCAL_PORT);
+    private int draggedRelayIndex = -1;
+    private boolean relayRowsEnabled = true;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -118,10 +127,31 @@ public class MainActivity extends Activity {
         root.addView(configCard, cardParams());
 
         configCard.addView(sectionTitle("Connection"));
-        primaryRelayUrlField = field("Primary relay URL");
-        configCard.addView(primaryRelayUrlField, matchWrap());
-        fallbackRelayUrlsField = multiLineField("Fallback relay URLs");
-        configCard.addView(fallbackRelayUrlsField, matchWrap());
+        relayUrlList = new LinearLayout(this);
+        relayUrlList.setOrientation(LinearLayout.VERTICAL);
+        relayUrlList.setOnDragListener((view, event) -> {
+            if (event.getAction() == DragEvent.ACTION_DROP && draggedRelayIndex >= 0) {
+                moveRelayUrl(draggedRelayIndex, relayUrls.size() - 1);
+                draggedRelayIndex = -1;
+                return true;
+            }
+            if (event.getAction() == DragEvent.ACTION_DRAG_ENDED) {
+                draggedRelayIndex = -1;
+            }
+            return true;
+        });
+        configCard.addView(relayUrlList, matchWrap());
+
+        LinearLayout addRelayRow = new LinearLayout(this);
+        addRelayRow.setOrientation(LinearLayout.HORIZONTAL);
+        relayUrlAddField = field("Relay room URL");
+        relayUrlAddField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        addRelayRow.addView(relayUrlAddField, weightedField());
+        relayAddButton = secondaryButton("Add");
+        relayAddButton.setOnClickListener(v -> addRelayUrlFromField());
+        addRelayRow.addView(relayAddButton, compactButtonParams());
+        configCard.addView(addRelayRow, matchWrap());
+
         localPortField = field("Local RDP port");
         localPortField.setInputType(InputType.TYPE_CLASS_NUMBER);
         configCard.addView(localPortField, matchWrap());
@@ -194,10 +224,9 @@ public class MainActivity extends Activity {
         try {
             relayUrls = RelayUrls.normalizeRelayUrls(HomePrefs.loadRelayUrl(this));
         } catch (URISyntaxException ex) {
-            relayUrls = java.util.Collections.singletonList(RelayUrls.DEFAULT_RELAY_URL);
+            relayUrls = Collections.singletonList(RelayUrls.DEFAULT_RELAY_URL);
         }
-        primaryRelayUrlField.setText(relayUrls.get(0));
-        fallbackRelayUrlsField.setText(RelayUrls.joinRelayUrls(relayUrls.subList(1, relayUrls.size())));
+        setRelayUrls(relayUrls);
         localPortField.setText(String.valueOf(HomePrefs.loadLocalPort(this)));
     }
 
@@ -214,16 +243,8 @@ public class MainActivity extends Activity {
         String relayUrl;
         int port;
         try {
-            List<String> relayUrls = new java.util.ArrayList<>();
-            String primaryRelayUrl = primaryRelayUrlField.getText().toString().trim();
-            if (!primaryRelayUrl.isEmpty()) {
-                relayUrls.add(RelayUrls.normalizeRelayUrl(primaryRelayUrl));
-            }
-            relayUrls.addAll(RelayUrls.normalizeRelayUrls(fallbackRelayUrlsField.getText().toString(), false));
-            if (relayUrls.isEmpty()) {
-                relayUrls.add(RelayUrls.DEFAULT_RELAY_URL);
-            }
-            relayUrl = RelayUrls.joinRelayUrls(relayUrls);
+            List<String> normalizedRelayUrls = normalizedRelayUrlsFromRows();
+            relayUrl = RelayUrls.joinRelayUrls(normalizedRelayUrls);
             port = parsePort(localPortField.getText().toString());
         } catch (Exception ex) {
             Toast.makeText(this, ex.getMessage(), Toast.LENGTH_LONG).show();
@@ -233,10 +254,9 @@ public class MainActivity extends Activity {
         try {
             relayUrls = RelayUrls.normalizeRelayUrls(relayUrl);
         } catch (URISyntaxException ex) {
-            relayUrls = java.util.Collections.singletonList(RelayUrls.DEFAULT_RELAY_URL);
+            relayUrls = Collections.singletonList(RelayUrls.DEFAULT_RELAY_URL);
         }
-        primaryRelayUrlField.setText(relayUrls.get(0));
-        fallbackRelayUrlsField.setText(RelayUrls.joinRelayUrls(relayUrls.subList(1, relayUrls.size())));
+        setRelayUrls(relayUrls);
         localPortField.setText(String.valueOf(port));
         savePreferences(relayUrl, port);
 
@@ -269,8 +289,7 @@ public class MainActivity extends Activity {
         messageView.setText(state.lastMessage);
         logView.setText(state.log);
         startButton.setText(state.running ? "Stop Tunnel" : "Start Tunnel");
-        primaryRelayUrlField.setEnabled(!state.running);
-        fallbackRelayUrlsField.setEnabled(!state.running);
+        setRelayRowsEnabled(!state.running);
         localPortField.setEnabled(!state.running);
     }
 
@@ -294,12 +313,215 @@ public class MainActivity extends Activity {
     }
 
     private void openDashboard() {
-        String relayUrl = primaryRelayUrlField.getText().toString();
+        String relayUrl = relayUrls.isEmpty() ? RelayUrls.DEFAULT_RELAY_URL : relayUrls.get(0);
         try {
             relayUrl = RelayUrls.normalizeRelayUrl(relayUrl);
         } catch (URISyntaxException ignored) {
         }
         startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(RelayUrls.dashboardUrl(relayUrl))));
+    }
+
+    private void setRelayUrls(List<String> values) {
+        relayUrls.clear();
+        if (values != null) {
+            for (String value : values) {
+                if (value != null && !value.trim().isEmpty()) {
+                    relayUrls.add(value.trim());
+                }
+            }
+        }
+        renderRelayRows();
+    }
+
+    private List<String> normalizedRelayUrlsFromRows() throws URISyntaxException {
+        List<String> normalized = RelayUrls.normalizeRelayUrls(RelayUrls.joinRelayUrls(relayUrls));
+        setRelayUrls(normalized);
+        return normalized;
+    }
+
+    private void addRelayUrlFromField() {
+        try {
+            String relayUrl = RelayUrls.normalizeRelayUrl(relayUrlAddField.getText().toString());
+            for (String existing : relayUrls) {
+                if (existing.equalsIgnoreCase(relayUrl)) {
+                    relayUrlAddField.setText("");
+                    return;
+                }
+            }
+            relayUrls.add(relayUrl);
+            relayUrlAddField.setText("");
+            renderRelayRows();
+        } catch (URISyntaxException ex) {
+            Toast.makeText(this, ex.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void renderRelayRows() {
+        if (relayUrlList == null) {
+            return;
+        }
+        relayUrlList.removeAllViews();
+        for (int i = 0; i < relayUrls.size(); i++) {
+            relayUrlList.addView(relayUrlRow(i), relayRowParams());
+        }
+        setRelayRowsEnabled(relayRowsEnabled);
+    }
+
+    private View relayUrlRow(int index) {
+        final int rowIndex = index;
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(10), dp(10), dp(10), dp(10));
+        row.setBackground(relayRowBackground(false));
+        row.setOnDragListener((view, event) -> {
+            switch (event.getAction()) {
+                case DragEvent.ACTION_DRAG_STARTED:
+                    return draggedRelayIndex >= 0;
+                case DragEvent.ACTION_DRAG_ENTERED:
+                    row.setBackground(relayRowBackground(true));
+                    return true;
+                case DragEvent.ACTION_DRAG_EXITED:
+                    row.setBackground(relayRowBackground(false));
+                    return true;
+                case DragEvent.ACTION_DROP:
+                    moveRelayUrl(draggedRelayIndex, rowIndex);
+                    draggedRelayIndex = -1;
+                    return true;
+                case DragEvent.ACTION_DRAG_ENDED:
+                    row.setBackground(relayRowBackground(false));
+                    return true;
+                default:
+                    return true;
+            }
+        });
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(top, matchNoMargin());
+
+        TextView role = label(rowIndex == 0 ? "Primary" : "Fallback", 12, "#2F6F73", true);
+        role.setGravity(Gravity.CENTER);
+        role.setBackground(rounded("#E9F3F1", "#BFD7D3", 8));
+        top.addView(role, roleParams());
+
+        EditText edit = field("Relay room URL");
+        edit.setText(relayUrls.get(rowIndex));
+        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        edit.setEnabled(relayRowsEnabled);
+        edit.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                if (rowIndex >= 0 && rowIndex < relayUrls.size()) {
+                    relayUrls.set(rowIndex, s.toString());
+                }
+            }
+        });
+        top.addView(edit, new LinearLayout.LayoutParams(0, dp(46), 1f));
+
+        LinearLayout tools = new LinearLayout(this);
+        tools.setOrientation(LinearLayout.HORIZONTAL);
+        tools.setGravity(Gravity.RIGHT);
+        tools.setPadding(0, dp(8), 0, 0);
+        row.addView(tools, matchNoMargin());
+
+        Button grip = compactButton("\u2261");
+        grip.setOnLongClickListener(v -> startRelayDrag(v, row, rowIndex));
+        tools.addView(grip, iconButtonParams());
+
+        Button up = compactButton("\u2191");
+        up.setEnabled(relayRowsEnabled && rowIndex > 0);
+        up.setOnClickListener(v -> moveRelayUrl(rowIndex, rowIndex - 1));
+        tools.addView(up, iconButtonParams());
+
+        Button down = compactButton("\u2193");
+        down.setEnabled(relayRowsEnabled && rowIndex < relayUrls.size() - 1);
+        down.setOnClickListener(v -> moveRelayUrl(rowIndex, rowIndex + 1));
+        tools.addView(down, iconButtonParams());
+
+        Button delete = compactButton("\u00d7");
+        delete.setOnClickListener(v -> {
+            if (rowIndex >= 0 && rowIndex < relayUrls.size()) {
+                relayUrls.remove(rowIndex);
+                renderRelayRows();
+            }
+        });
+        tools.addView(delete, iconButtonParams());
+
+        return row;
+    }
+
+    private boolean startRelayDrag(View handle, View shadowSource, int index) {
+        if (!relayRowsEnabled || index < 0 || index >= relayUrls.size()) {
+            return false;
+        }
+        draggedRelayIndex = index;
+        ClipData data = ClipData.newPlainText("DeskFerry relay URL", relayUrls.get(index));
+        boolean started;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            started = handle.startDragAndDrop(data, new View.DragShadowBuilder(shadowSource), null, 0);
+        } else {
+            started = handle.startDrag(data, new View.DragShadowBuilder(shadowSource), null, 0);
+        }
+        if (!started) {
+            draggedRelayIndex = -1;
+        }
+        return started;
+    }
+
+    private void moveRelayUrl(int from, int to) {
+        if (relayUrls.isEmpty()) {
+            return;
+        }
+        if (from < 0 || from >= relayUrls.size()) {
+            return;
+        }
+        if (to < 0) {
+            to = 0;
+        }
+        if (to >= relayUrls.size()) {
+            to = relayUrls.size() - 1;
+        }
+        if (from == to) {
+            return;
+        }
+        String value = relayUrls.remove(from);
+        if (to > relayUrls.size()) {
+            to = relayUrls.size();
+        }
+        relayUrls.add(to, value);
+        renderRelayRows();
+    }
+
+    private void setRelayRowsEnabled(boolean enabled) {
+        relayRowsEnabled = enabled;
+        if (relayUrlList != null) {
+            setEnabledRecursive(relayUrlList, enabled);
+        }
+        if (relayUrlAddField != null) {
+            relayUrlAddField.setEnabled(enabled);
+        }
+        if (relayAddButton != null) {
+            relayAddButton.setEnabled(enabled);
+        }
+    }
+
+    private void setEnabledRecursive(View view, boolean enabled) {
+        view.setEnabled(enabled);
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                setEnabledRecursive(group.getChildAt(i), enabled);
+            }
+        }
     }
 
     private void maybeRequestNotificationPermission() {
@@ -325,17 +547,6 @@ public class MainActivity extends Activity {
         edit.setTextColor(color("#1F2933"));
         edit.setHintTextColor(color("#8A949E"));
         edit.setBackground(rounded("#FBFCFD", "#D7DEE3", 8));
-        return edit;
-    }
-
-    private EditText multiLineField(String hint) {
-        EditText edit = field(hint);
-        edit.setSingleLine(false);
-        edit.setMinLines(2);
-        edit.setMaxLines(4);
-        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_VARIATION_URI);
-        edit.setGravity(Gravity.TOP | Gravity.START);
-        edit.setMinHeight(dp(88));
         return edit;
     }
 
@@ -371,6 +582,14 @@ public class MainActivity extends Activity {
         return button;
     }
 
+    private Button compactButton(String text) {
+        Button button = secondaryButton(text);
+        button.setTextSize(16);
+        button.setMinWidth(0);
+        button.setPadding(0, 0, 0, 0);
+        return button;
+    }
+
     private Button button(String text) {
         Button button = new Button(this);
         button.setAllCaps(false);
@@ -395,6 +614,30 @@ public class MainActivity extends Activity {
         return params;
     }
 
+    private LinearLayout.LayoutParams weightedField() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        params.setMargins(0, 0, dp(8), 0);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams compactButtonParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(86), dp(48));
+        params.setMargins(0, 0, 0, 0);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams iconButtonParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(44), dp(42));
+        params.setMargins(dp(5), 0, 0, 0);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams roleParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(76), dp(42));
+        params.setMargins(0, 0, dp(8), 0);
+        return params;
+    }
+
     private LinearLayout.LayoutParams cardParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -411,12 +654,30 @@ public class MainActivity extends Activity {
         return params;
     }
 
+    private LinearLayout.LayoutParams matchNoMargin() {
+        return new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private LinearLayout.LayoutParams relayRowParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.setMargins(0, 0, 0, dp(8));
+        return params;
+    }
+
     private GradientDrawable rounded(String fill, String stroke, int radiusDp) {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(color(fill));
         drawable.setCornerRadius(dp(radiusDp));
         drawable.setStroke(dp(1), color(stroke));
         return drawable;
+    }
+
+    private GradientDrawable relayRowBackground(boolean active) {
+        return rounded(active ? "#EAF5F3" : "#FBFCFD", active ? "#2F6F73" : "#D7DEE3", 8);
     }
 
     private int color(String hex) {

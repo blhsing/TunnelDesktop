@@ -19,6 +19,7 @@ import (
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
+	"github.com/lxn/win"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -33,12 +34,22 @@ const (
 )
 
 type app struct {
-	mw         *walk.MainWindow
-	installDir *walk.LineEdit
-	agentPath  *walk.LineEdit
-	relayURL   *walk.TextEdit
-	status     *walk.Label
-	log        *walk.TextEdit
+	mw              *walk.MainWindow
+	installDir      *walk.LineEdit
+	agentPath       *walk.LineEdit
+	relayList       *walk.ListBox
+	relayEdit       *walk.LineEdit
+	relayAdd        *walk.PushButton
+	relayUpdate     *walk.PushButton
+	relayDelete     *walk.PushButton
+	relayUp         *walk.PushButton
+	relayDown       *walk.PushButton
+	status          *walk.Label
+	log             *walk.TextEdit
+	relayURLs       []string
+	relayDragIndex  int
+	relayDragStartY int
+	relayDragging   bool
 }
 
 type actionOptions struct {
@@ -73,6 +84,7 @@ func main() {
 func (a *app) run(smokeTest bool) error {
 	installDir := defaultInstallDir()
 	agentPath := defaultAgentPath()
+	a.relayDragIndex = -1
 
 	window := MainWindow{
 		AssignTo: &a.mw,
@@ -95,7 +107,38 @@ func (a *app) run(smokeTest bool) error {
 					PushButton{Text: "Browse", OnClicked: a.browseAgentPath},
 
 					Label{Text: "Relay URLs"},
-					TextEdit{AssignTo: &a.relayURL, Text: defaultRelayURL, VScroll: true, ColumnSpan: 2, MinSize: Size{Height: 62}},
+					Composite{
+						ColumnSpan: 2,
+						Layout:     VBox{Spacing: 6},
+						Children: []Widget{
+							ListBox{
+								AssignTo:              &a.relayList,
+								Model:                 []string{defaultRelayURL},
+								MinSize:               Size{Height: 74},
+								OnCurrentIndexChanged: a.relaySelectionChanged,
+								OnMouseDown:           a.relayListMouseDown,
+								OnMouseMove:           a.relayListMouseMove,
+								OnMouseUp:             a.relayListMouseUp,
+							},
+							Composite{
+								Layout: Grid{Columns: 3, Spacing: 6},
+								Children: []Widget{
+									Label{Text: "Selected URL"},
+									LineEdit{AssignTo: &a.relayEdit, CueBanner: defaultRelayURL, ColumnSpan: 2},
+								},
+							},
+							Composite{
+								Layout: Flow{Spacing: 6},
+								Children: []Widget{
+									PushButton{AssignTo: &a.relayAdd, Text: "Add", MinSize: Size{Width: 72, Height: 30}, OnClicked: a.addRelayURL},
+									PushButton{AssignTo: &a.relayUpdate, Text: "Update", MinSize: Size{Width: 82, Height: 30}, OnClicked: a.updateRelayURL},
+									PushButton{AssignTo: &a.relayDelete, Text: "Delete", MinSize: Size{Width: 78, Height: 30}, OnClicked: a.deleteRelayURL},
+									PushButton{AssignTo: &a.relayUp, Text: "Up", MinSize: Size{Width: 64, Height: 30}, OnClicked: func() { a.moveRelayURL(-1) }},
+									PushButton{AssignTo: &a.relayDown, Text: "Down", MinSize: Size{Width: 64, Height: 30}, OnClicked: func() { a.moveRelayURL(1) }},
+								},
+							},
+						},
+					},
 				},
 			},
 			GroupBox{
@@ -124,6 +167,7 @@ func (a *app) run(smokeTest bool) error {
 	if err := window.Create(); err != nil {
 		return err
 	}
+	a.setRelayURLList([]string{defaultRelayURL}, 0)
 	if smokeTest {
 		time.AfterFunc(250*time.Millisecond, func() {
 			a.mw.Synchronize(func() {
@@ -164,6 +208,224 @@ func (a *app) browseAgentPath() {
 	} else if ok {
 		a.agentPath.SetText(dlg.FilePath)
 	}
+}
+
+func (a *app) relayURLListValues() []string {
+	return append([]string(nil), a.relayURLs...)
+}
+
+func (a *app) setRelayURLList(values []string, selectIndex int) {
+	a.relayURLs = uniqueRelayURLs(values)
+	if len(a.relayURLs) == 0 {
+		selectIndex = -1
+	} else if selectIndex < 0 {
+		selectIndex = 0
+	} else if selectIndex >= len(a.relayURLs) {
+		selectIndex = len(a.relayURLs) - 1
+	}
+	if a.relayList != nil {
+		_ = a.relayList.SetModel(append([]string(nil), a.relayURLs...))
+		_ = a.relayList.SetCurrentIndex(selectIndex)
+	}
+	a.setRelayEditorFromIndex(selectIndex)
+	a.updateRelayButtons()
+}
+
+func (a *app) setRelayEditorFromIndex(index int) {
+	if a.relayEdit == nil {
+		return
+	}
+	if index >= 0 && index < len(a.relayURLs) {
+		_ = a.relayEdit.SetText(a.relayURLs[index])
+		return
+	}
+	_ = a.relayEdit.SetText("")
+}
+
+func (a *app) relaySelectionChanged() {
+	index := -1
+	if a.relayList != nil {
+		index = a.relayList.CurrentIndex()
+	}
+	a.setRelayEditorFromIndex(index)
+	a.updateRelayButtons()
+}
+
+func (a *app) updateRelayButtons() {
+	if a.relayList == nil {
+		return
+	}
+	index := a.relayList.CurrentIndex()
+	hasSelection := index >= 0 && index < len(a.relayURLs)
+	if a.relayUpdate != nil {
+		a.relayUpdate.SetEnabled(hasSelection)
+	}
+	if a.relayDelete != nil {
+		a.relayDelete.SetEnabled(hasSelection)
+	}
+	if a.relayUp != nil {
+		a.relayUp.SetEnabled(hasSelection && index > 0)
+	}
+	if a.relayDown != nil {
+		a.relayDown.SetEnabled(hasSelection && index < len(a.relayURLs)-1)
+	}
+}
+
+func (a *app) relayURLFromEditor() (string, error) {
+	if a.relayEdit == nil {
+		return "", errors.New("relay URL editor is not available")
+	}
+	value := strings.TrimSpace(a.relayEdit.Text())
+	if value == "" {
+		return "", errors.New("relay URL is required")
+	}
+	return value, nil
+}
+
+func (a *app) addRelayURL() {
+	value, err := a.relayURLFromEditor()
+	if err != nil {
+		a.showError(err)
+		return
+	}
+	values := a.relayURLListValues()
+	for i, existing := range values {
+		if strings.EqualFold(existing, value) {
+			a.setRelayURLList(values, i)
+			return
+		}
+	}
+	values = append(values, value)
+	a.setRelayURLList(values, len(values)-1)
+}
+
+func (a *app) updateRelayURL() {
+	index := -1
+	if a.relayList != nil {
+		index = a.relayList.CurrentIndex()
+	}
+	if index < 0 || index >= len(a.relayURLs) {
+		a.addRelayURL()
+		return
+	}
+	value, err := a.relayURLFromEditor()
+	if err != nil {
+		a.showError(err)
+		return
+	}
+	values := a.relayURLListValues()
+	values[index] = value
+	values = uniqueRelayURLs(values)
+	nextIndex := index
+	for i, existing := range values {
+		if strings.EqualFold(existing, value) {
+			nextIndex = i
+			break
+		}
+	}
+	a.setRelayURLList(values, nextIndex)
+}
+
+func (a *app) deleteRelayURL() {
+	if a.relayList == nil {
+		return
+	}
+	index := a.relayList.CurrentIndex()
+	if index < 0 || index >= len(a.relayURLs) {
+		return
+	}
+	values := a.relayURLListValues()
+	values = append(values[:index], values[index+1:]...)
+	a.setRelayURLList(values, index)
+}
+
+func (a *app) moveRelayURL(delta int) {
+	if a.relayList == nil {
+		return
+	}
+	index := a.relayList.CurrentIndex()
+	a.moveRelayURLTo(index, index+delta)
+}
+
+func (a *app) moveRelayURLTo(from, to int) {
+	if from < 0 || from >= len(a.relayURLs) || to < 0 || to >= len(a.relayURLs) || from == to {
+		return
+	}
+	values := a.relayURLListValues()
+	value := values[from]
+	values = append(values[:from], values[from+1:]...)
+	if to >= len(values) {
+		values = append(values, value)
+	} else {
+		values = append(values[:to], append([]string{value}, values[to:]...)...)
+	}
+	a.setRelayURLList(values, to)
+}
+
+func (a *app) relayListMouseDown(x, y int, button walk.MouseButton) {
+	if button != walk.LeftButton {
+		return
+	}
+	a.relayDragIndex = a.relayListIndexAt(x, y)
+	a.relayDragStartY = y
+	a.relayDragging = false
+	if a.relayDragIndex >= 0 {
+		_ = a.relayList.SetCurrentIndex(a.relayDragIndex)
+	}
+}
+
+func (a *app) relayListMouseMove(_, y int, button walk.MouseButton) {
+	if button&walk.LeftButton == 0 || a.relayDragIndex < 0 {
+		return
+	}
+	if absInt(y-a.relayDragStartY) > 4 {
+		a.relayDragging = true
+	}
+}
+
+func (a *app) relayListMouseUp(x, y int, button walk.MouseButton) {
+	if button != walk.LeftButton {
+		return
+	}
+	from := a.relayDragIndex
+	dragging := a.relayDragging
+	a.relayDragIndex = -1
+	a.relayDragging = false
+	if !dragging || from < 0 {
+		return
+	}
+	to := a.relayListIndexAt(x, y)
+	if to < 0 {
+		if y < 0 {
+			to = 0
+		} else {
+			to = len(a.relayURLs) - 1
+		}
+	}
+	a.moveRelayURLTo(from, to)
+}
+
+func (a *app) relayListIndexAt(x, y int) int {
+	if a.relayList == nil || len(a.relayURLs) == 0 {
+		return -1
+	}
+	lParam := uintptr(uint32(uint16(x)) | uint32(uint16(y))<<16)
+	result := uint32(a.relayList.SendMessage(win.LB_ITEMFROMPOINT, 0, lParam))
+	if win.HIWORD(result) != 0 {
+		return -1
+	}
+	index := int(win.LOWORD(result))
+	if index < 0 || index >= len(a.relayURLs) {
+		return -1
+	}
+	return index
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func (a *app) runAction(action string) {
@@ -320,7 +582,7 @@ func (a *app) options() actionOptions {
 	return actionOptions{
 		InstallDir: strings.TrimSpace(a.installDir.Text()),
 		AgentPath:  strings.TrimSpace(a.agentPath.Text()),
-		RelayURL:   joinRelayURLs(splitRelayURLs(a.relayURL.Text())),
+		RelayURL:   joinRelayURLs(a.relayURLListValues()),
 	}
 }
 
@@ -780,7 +1042,7 @@ func splitRelayURLs(value string) []string {
 	return out
 }
 
-func joinRelayURLs(values []string) string {
+func uniqueRelayURLs(values []string) []string {
 	out := make([]string, 0, len(values))
 	seen := make(map[string]bool, len(values))
 	for _, value := range values {
@@ -795,7 +1057,11 @@ func joinRelayURLs(values []string) string {
 		seen[key] = true
 		out = append(out, value)
 	}
-	return strings.Join(out, ";")
+	return out
+}
+
+func joinRelayURLs(values []string) string {
+	return strings.Join(uniqueRelayURLs(values), ";")
 }
 
 func windowsMessageBox(title, text string, style uint32) {
