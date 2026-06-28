@@ -106,6 +106,8 @@ http://217.142.228.117/relay/b
 
 It runs as the systemd service `deskferry-relay.service` under `/opt/deskferry/python-relay` and listens on public HTTP port `80`. The OCI security rules must allow inbound TCP `80`, and the VM firewall must allow the `http` service.
 
+The OCI relay does not terminate TLS. Use `http://217.142.228.117/relay/<room>`, not `https://217.142.228.117/relay/<room>`. The `https://` form makes clients try port `443`, which is not served by this VM.
+
 Build the normal Python source zip and a Linux/Python 3.9 vendored zip:
 
 ```powershell
@@ -141,6 +143,8 @@ For the OCI relay, the equivalent room URL is:
 ```text
 http://217.142.228.117/relay/workdesk
 ```
+
+Keep the `http://` scheme for OCI room URLs. If a home or work log shows `https://217.142.228.117/...`, that client is trying port `443` and will fail before it reaches the relay.
 
 Use the same room name everywhere. The work agent can use both URLs at the same time. Home apps can also use both URLs as a primary/fallback list, with the primary URL entered first and fallback URLs entered below it.
 
@@ -465,6 +469,7 @@ Common causes:
 Check:
 
 - The home app status tiles show a room URL that is also configured on the work agent.
+- OCI room URLs use `http://217.142.228.117/...`, not `https://217.142.228.117/...`.
 - The room dashboard shows waiting work-agent sockets.
 - The agent service is running.
 - Work PC allows RDP.

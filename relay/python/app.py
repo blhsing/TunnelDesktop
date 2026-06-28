@@ -15,6 +15,9 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 SERVICE_NAME = "DeskFerry.Relay"
 DASHBOARD_ROLE = "dashboard"
+STARTED = "started"
+AGENT_UNAVAILABLE = "agent-unavailable"
+CLIENT_UNAVAILABLE = "client-unavailable"
 VALID_ROLES = {"agent", "client", "home-agent", "probe", DASHBOARD_ROLE}
 
 logger = logging.getLogger("deskferry.relay")
@@ -64,6 +67,16 @@ def websocket_remote(websocket: WebSocket) -> str:
     if forwarded.strip():
         return forwarded.split(",", 1)[0].strip()
     return websocket.client.host if websocket.client else "unknown"
+
+
+def try_set_result(future: asyncio.Future[Any], value: Any) -> None:
+    if not future.done():
+        future.set_result(value)
+
+
+def try_cancel(future: asyncio.Future[Any]) -> None:
+    if not future.done():
+        future.cancel()
 
 
 def read_role(websocket: WebSocket) -> str | None:
@@ -119,11 +132,24 @@ async def pump_binary(source: WebSocket, destination: WebSocket) -> None:
             await destination.send_bytes(payload)
 
 
+async def send_start(websocket: WebSocket, side: str, room: str, remote: str) -> bool:
+    try:
+        await websocket.send_text("start")
+        return True
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.info("start frame failed room=%s side=%s remote=%s", room, side, remote, exc_info=True)
+        await close_quietly(websocket)
+        return False
+
+
 @dataclass
 class HomePeer:
     websocket: WebSocket
     remote: str
     done: asyncio.Future[None]
+    started: asyncio.Future[str]
 
 
 @dataclass
@@ -279,37 +305,62 @@ class RelayHub:
         logger.info("agent waiting room=%s remote=%s", room.id, remote)
         self.notify_dashboards()
 
+        peer: HomePeer | None = None
         try:
             peer = await waiting.paired
             logger.info("pairing room=%s agent=%s client=%s", room.id, remote, peer.remote)
-            await websocket.send_text("start")
-            await peer.websocket.send_text("start")
+            if not await send_start(websocket, "agent", room.id, remote):
+                try_set_result(peer.started, AGENT_UNAVAILABLE)
+                return
+            if not await send_start(peer.websocket, "client", room.id, peer.remote):
+                try_set_result(peer.started, CLIENT_UNAVAILABLE)
+                try_set_result(peer.done, None)
+                return
+            try_set_result(peer.started, STARTED)
             await room.bridge(websocket, peer.websocket, remote, peer.remote, peer.done, self.notify_dashboards)
         except (asyncio.CancelledError, WebSocketDisconnect):
+            if peer is not None and not peer.started.done():
+                try_cancel(peer.started)
             pass
+        except Exception:
+            logger.exception("agent websocket ended room=%s remote=%s", room.id, remote)
+            if peer is not None and not peer.started.done():
+                try_set_result(peer.started, AGENT_UNAVAILABLE)
         finally:
+            if peer is not None and not peer.started.done():
+                try_set_result(peer.started, AGENT_UNAVAILABLE)
             waiting.try_cancel()
             await room.remove_waiting(waiting)
             self.notify_dashboards()
 
     async def serve_client(self, token: str, websocket: WebSocket, remote: str) -> None:
         room = await self._room_for(token)
-        waiting = await room.try_take_agent()
-        if waiting is None:
-            logger.info("client rejected without agent room=%s remote=%s", room.id, remote)
-            await close_quietly(websocket, 1013, "no work agent connected")
-            return
+        while websocket_is_connected(websocket):
+            waiting = await room.try_take_agent()
+            if waiting is None:
+                logger.info("client rejected without agent room=%s remote=%s", room.id, remote)
+                await close_quietly(websocket, 1013, "no work agent connected")
+                return
 
-        done: asyncio.Future[None] = asyncio.Future()
-        if not waiting.try_pair(HomePeer(websocket, remote, done)):
-            await close_quietly(websocket, 1013, "work agent unavailable")
-            return
-        self.notify_dashboards()
+            done: asyncio.Future[None] = asyncio.Future()
+            started: asyncio.Future[str] = asyncio.Future()
+            if not waiting.try_pair(HomePeer(websocket, remote, done, started)):
+                continue
+            self.notify_dashboards()
 
-        try:
-            await done
-        except asyncio.CancelledError:
-            pass
+            try:
+                start_result = await started
+                if start_result == STARTED:
+                    await done
+                    return
+                if start_result == CLIENT_UNAVAILABLE:
+                    return
+                logger.info("skipped unavailable work agent room=%s agent=%s client=%s", room.id, waiting.remote, remote)
+            except asyncio.CancelledError:
+                try_cancel(done)
+                return
+
+        await close_quietly(websocket)
 
     async def serve_home_agent(self, token: str, websocket: WebSocket, remote: str) -> None:
         room = await self._room_for(token)

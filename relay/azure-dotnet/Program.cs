@@ -481,6 +481,10 @@ static string DashboardHtml(string room = "")
 
 sealed class RelayHub
 {
+    private const string Started = "started";
+    private const string AgentUnavailable = "agent-unavailable";
+    private const string ClientUnavailable = "client-unavailable";
+
     private readonly ConcurrentDictionary<string, RelayRoom> _rooms = new();
     private readonly ConcurrentDictionary<Guid, DashboardClient> _dashboards = new();
     private readonly ILogger<RelayHub> _log;
@@ -497,24 +501,43 @@ sealed class RelayHub
         _log.LogInformation("agent waiting room={Room} remote={Remote}", room.Id, remote);
         NotifyDashboards();
 
+        HomePeer? peer = null;
         using var reg = abort.Register(() => waiting.TryCancel());
         try
         {
-            var peer = await waiting.WaitAsync();
+            peer = await waiting.WaitAsync();
             _log.LogInformation("pairing room={Room} agent={AgentRemote} client={ClientRemote}", room.Id, remote, peer.Remote);
-            await SendStartAsync(socket, abort);
-            await SendStartAsync(peer.Socket, abort);
+            if (!await TrySendStartAsync(socket, room.Id, remote, "agent", abort))
+            {
+                peer.Started.TrySetResult(AgentUnavailable);
+                return;
+            }
+            if (!await TrySendStartAsync(peer.Socket, room.Id, peer.Remote, "client", abort))
+            {
+                peer.Started.TrySetResult(ClientUnavailable);
+                peer.Done.TrySetResult();
+                return;
+            }
+            peer.Started.TrySetResult(Started);
             await room.BridgeAsync(socket, peer.Socket, remote, peer.Remote, peer.Done, NotifyDashboards, abort);
         }
         catch (OperationCanceledException)
         {
+            peer?.Started.TrySetCanceled();
         }
         catch (WebSocketException ex)
         {
             _log.LogInformation(ex, "agent websocket ended room={Room} remote={Remote}", room.Id, remote);
+            peer?.Started.TrySetResult(AgentUnavailable);
+        }
+        catch (Exception ex)
+        {
+            _log.LogInformation(ex, "agent websocket ended room={Room} remote={Remote}", room.Id, remote);
+            peer?.Started.TrySetResult(AgentUnavailable);
         }
         finally
         {
+            peer?.Started.TrySetResult(AgentUnavailable);
             room.RemoveWaiting(waiting);
             NotifyDashboards();
         }
@@ -523,31 +546,52 @@ sealed class RelayHub
     public async Task ServeClientAsync(string token, WebSocket socket, string remote, CancellationToken abort)
     {
         var room = RoomFor(token);
-        var peer = room.TryTakeAgent();
-        if (peer is null)
+        while (socket.State == WebSocketState.Open && !abort.IsCancellationRequested)
         {
-            _log.LogInformation("client rejected without agent room={Room} remote={Remote}", room.Id, remote);
-            await socket.CloseAsync(WebSocketCloseStatus.EndpointUnavailable, "no work agent connected", CancellationToken.None);
-            return;
+            var peer = room.TryTakeAgent();
+            if (peer is null)
+            {
+                _log.LogInformation("client rejected without agent room={Room} remote={Remote}", room.Id, remote);
+                await socket.CloseAsync(WebSocketCloseStatus.EndpointUnavailable, "no work agent connected", CancellationToken.None);
+                return;
+            }
+
+            var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var started = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!peer.TryPair(new HomePeer(socket, remote, done, started)))
+            {
+                done.TrySetResult();
+                continue;
+            }
+            NotifyDashboards();
+
+            using var reg = abort.Register(() =>
+            {
+                started.TrySetCanceled();
+                done.TrySetCanceled();
+            });
+            try
+            {
+                var startResult = await started.Task;
+                if (startResult == Started)
+                {
+                    await done.Task;
+                    return;
+                }
+                if (startResult == ClientUnavailable)
+                {
+                    return;
+                }
+                _log.LogInformation("skipped unavailable work agent room={Room} agent={AgentRemote} client={ClientRemote}", room.Id, peer.Remote, remote);
+            }
+            catch (OperationCanceledException)
+            {
+                done.TrySetCanceled();
+                return;
+            }
         }
 
-        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!peer.TryPair(new HomePeer(socket, remote, done)))
-        {
-            done.TrySetResult();
-            await socket.CloseAsync(WebSocketCloseStatus.EndpointUnavailable, "work agent unavailable", CancellationToken.None);
-            return;
-        }
-        NotifyDashboards();
-
-        using var reg = abort.Register(() => done.TrySetCanceled());
-        try
-        {
-            await done.Task;
-        }
-        catch (OperationCanceledException)
-        {
-        }
+        await CloseQuietlyAsync(socket);
     }
 
     public async Task ServeHomeAgentAsync(string token, WebSocket socket, string remote, CancellationToken abort)
@@ -643,6 +687,25 @@ sealed class RelayHub
     {
         var payload = Encoding.UTF8.GetBytes("start");
         await socket.SendAsync(payload, WebSocketMessageType.Text, true, cancellationToken);
+    }
+
+    private async Task<bool> TrySendStartAsync(WebSocket socket, string room, string remote, string side, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SendStartAsync(socket, cancellationToken);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.LogInformation(ex, "start frame failed room={Room} side={Side} remote={Remote}", room, side, remote);
+            await CloseQuietlyAsync(socket);
+            return false;
+        }
     }
 
     private static async Task DrainUntilCloseAsync(WebSocket socket, CancellationToken cancellationToken)
@@ -957,7 +1020,7 @@ sealed class WaitingAgent
     public void TryCancel() => _paired.TrySetCanceled();
 }
 
-sealed record HomePeer(WebSocket Socket, string Remote, TaskCompletionSource Done);
+sealed record HomePeer(WebSocket Socket, string Remote, TaskCompletionSource Done, TaskCompletionSource<string> Started);
 
 sealed record DashboardClient(Guid Id, WebSocket Socket, string? RoomId)
 {

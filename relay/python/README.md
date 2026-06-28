@@ -47,6 +47,8 @@ The current OCI VM relay is deployed at:
 http://217.142.228.117/relay/b
 ```
 
+This deployment listens on plain HTTP port `80`. Configure clients with `http://217.142.228.117/relay/<room>`, not `https://217.142.228.117/relay/<room>`, because the VM does not serve the relay on port `443`.
+
 The VM runs the relay directly on port `80` as:
 
 ```text

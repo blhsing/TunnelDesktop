@@ -1,8 +1,36 @@
 import json
+import asyncio
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketState
 
-from app import app, room_id
+from app import RelayHub, app, room_id
+
+
+class FakeWebSocket:
+    def __init__(self, fail_text: bool = False):
+        self.client_state = WebSocketState.CONNECTED
+        self.application_state = WebSocketState.CONNECTED
+        self.fail_text = fail_text
+        self.text_messages = []
+        self.closed = False
+        self._received = asyncio.Queue()
+
+    async def send_text(self, text):
+        if self.fail_text:
+            raise RuntimeError("stale websocket")
+        self.text_messages.append(text)
+
+    async def send_bytes(self, payload):
+        pass
+
+    async def receive(self):
+        return await self._received.get()
+
+    async def close(self, code=1000, reason=""):
+        self.closed = True
+        self.client_state = WebSocketState.DISCONNECTED
+        self.application_state = WebSocketState.DISCONNECTED
 
 
 def test_room_id_matches_dotnet_normalization():
@@ -84,3 +112,32 @@ def test_dashboard_websocket_receives_snapshot():
         payload = json.loads(dashboard.receive_text())
         assert payload["service"] == "DeskFerry.Relay"
         assert payload["rooms"] == []
+
+
+def test_client_skips_stale_waiting_agent():
+    async def scenario():
+        hub = RelayHub()
+        stale_agent = FakeWebSocket(fail_text=True)
+        live_agent = FakeWebSocket()
+        home = FakeWebSocket()
+
+        stale_task = asyncio.create_task(hub.serve_agent("unit-stale", stale_agent, "stale-work"))
+        live_task = asyncio.create_task(hub.serve_agent("unit-stale", live_agent, "live-work"))
+        await asyncio.sleep(0)
+
+        client_task = asyncio.create_task(hub.serve_client("unit-stale", home, "home"))
+        for _ in range(50):
+            if home.text_messages:
+                break
+            await asyncio.sleep(0.01)
+
+        assert stale_agent.closed is True
+        assert stale_agent.text_messages == []
+        assert live_agent.text_messages == ["start"]
+        assert home.text_messages == ["start"]
+
+        for task in (client_task, stale_task, live_task):
+            task.cancel()
+        await asyncio.gather(client_task, stale_task, live_task, return_exceptions=True)
+
+    asyncio.run(scenario())
