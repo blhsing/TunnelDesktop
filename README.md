@@ -1,6 +1,6 @@
 # DeskFerry
 
-DeskFerry is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `relay/python/`. The work-side Windows service and the Windows, macOS, and Android home agents connect out to relay web services over WebSockets.
+DeskFerry is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/` and an OCI Always Free fallback relay at `http://217.142.228.117/relay/`. The Azure relay implementation is .NET, the OCI relay implementation is a lightweight Go service, and a protocol-compatible Python/FastAPI relay is also available under `relay/python/`. The work-side Windows service and the Windows, macOS, and Android home agents connect out to relay web services over WebSockets.
 
 Home apps accept one or more relay room URLs in priority order. The first URL is the primary relay; later URLs are fallbacks used when the primary cannot connect or cannot pair an RDP stream. The work agent can connect to one or more relay room URLs at the same time, as long as they use the same room name. For example:
 
@@ -18,7 +18,7 @@ The Android app is a home-agent client like the Windows and macOS home agents. I
 - [How It Works](#how-it-works)
 - [Installation](#installation)
   - [1. Deploy Azure Relay](#1-deploy-azure-relay)
-  - [2. Deploy Python Relay On OCI](#2-deploy-python-relay-on-oci)
+  - [2. Deploy Go Relay On OCI](#2-deploy-go-relay-on-oci)
   - [3. Choose A Room URL](#3-choose-a-room-url)
   - [4. Install Work Agent](#4-install-work-agent)
   - [5. Run Windows Home App](#5-run-windows-home-app)
@@ -26,6 +26,7 @@ The Android app is a home-agent client like the Windows and macOS home agents. I
   - [7. Run Android Home App](#7-run-android-home-app)
 - [Deliverables](#deliverables)
   - [Azure Relay Web Service](#azure-relay-web-service)
+  - [Go Relay Web Service](#go-relay-web-service)
   - [Python Relay Web Service](#python-relay-web-service)
   - [Work Agent](#work-agent)
   - [Agent Configurator](#agent-configurator)
@@ -96,36 +97,34 @@ https://test-officialwebsite.azurewebsites.net/relay/health
 https://test-officialwebsite.azurewebsites.net/relay/status
 ```
 
-### 2. Deploy Python Relay On OCI
+### 2. Deploy Go Relay On OCI
 
-The Python relay can also run on a small Linux VM. The current OCI deployment is:
+The OCI fallback relay runs as a small native Go binary. The current OCI deployment is:
 
 ```text
 http://217.142.228.117/relay/b
 ```
 
-It runs as the systemd service `deskferry-relay.service` under `/opt/deskferry/python-relay` and listens on public HTTP port `80`. The OCI security rules must allow inbound TCP `80`, and the VM firewall must allow the `http` service.
+It runs as the systemd service `deskferry-relay.service` under `/opt/deskferry/go-relay` and listens on public HTTP port `80`. The OCI security rules must allow inbound TCP `80`, and the VM firewall must allow the `http` service.
 
 The OCI relay does not terminate TLS. Use `http://217.142.228.117/relay/<room>`, not `https://217.142.228.117/relay/<room>`. The `https://` form makes clients try port `443`, which is not served by this VM.
 
-Build the normal Python source zip and a Linux/Python 3.9 vendored zip:
+Build the native Linux relay binary:
 
 ```powershell
-python -m pip install -r relay\python\requirements-dev.txt
-.\build\build-python-relay.ps1
+.\build\build-go.ps1
 ```
 
-Artifacts:
+Artifact:
 
 ```text
-dist\python-relay\deskferry-python-relay.zip
-dist\python-relay\deskferry-python-relay-linux-cp39-vendored.zip
+dist\bin\deskferry-relay-linux-amd64
 ```
 
-The vendored zip is for Oracle Linux 9's system Python 3.9 and avoids running `pip` on a low-memory Always Free VM. Deploy by extracting the vendored zip to `/opt/deskferry/python-relay`, setting `PYTHONPATH=/opt/deskferry/python-relay/vendor`, and running:
+Deploy by copying the binary to `/opt/deskferry/go-relay/deskferry-relay` and running:
 
 ```text
-/usr/bin/python3 -m uvicorn app:app --host 0.0.0.0 --port 80 --proxy-headers
+/opt/deskferry/go-relay/deskferry-relay -listen 0.0.0.0:80
 ```
 
 The current OCI host is hardened for a small Always Free VM: it uses a 2 GiB swap file, persistent journald, a 60-second systemd runtime watchdog through `softdog`, kernel panic recovery for hung tasks, and a local health timer named `deskferry-relay-healthcheck.timer`. The timer checks `http://127.0.0.1/relay/health` every minute, restarts `deskferry-relay.service` when the relay process stops responding, and reboots the VM after three consecutive failed post-restart checks.
@@ -254,9 +253,32 @@ Roles:
 
 The dashboard shows work-agent presence, home-side activity, active stream counts, total stream count, and recent remote addresses. Home-side activity is active when either the lightweight home-app presence socket is connected or an RDP stream is currently bridged. It also serves the DeskFerry icon as `/relay/icon.svg` for favicon and header branding.
 
+### Go Relay Web Service
+
+`relay/go/` is a lightweight Go implementation of the same relay contract. It is the active OCI Always Free VM deployment because it runs as one static binary with a much smaller memory footprint than the Python/FastAPI relay.
+
+It exposes the same user-facing paths:
+
+- `GET /relay/` and `GET /relay/<room>` for the live dashboard.
+- `GET /relay/health` for health JSON.
+- `GET /relay/status` for JSON status.
+- `GET /relay/ws` and `GET /relay/<room>/ws` as WebSocket endpoints.
+
+Build the Linux relay binary:
+
+```powershell
+.\build\build-go.ps1
+```
+
+The build emits:
+
+```text
+dist\bin\deskferry-relay-linux-amd64
+```
+
 ### Python Relay Web Service
 
-`relay/python/` is a FastAPI/ASGI implementation of the same relay contract. It is useful for hosting on Python-capable App Service plans, on a Linux VM such as OCI Always Free, or for local relay testing without the .NET runtime.
+`relay/python/` is a FastAPI/ASGI implementation of the same relay contract. It is useful for hosting on Python-capable App Service plans or for local relay testing without the .NET runtime. The active OCI VM deployment uses the Go relay instead.
 
 It exposes the same user-facing paths:
 
@@ -411,6 +433,7 @@ Artifacts:
 dist\azure-relay\deskferry-azure-relay.zip
 dist\python-relay\deskferry-python-relay.zip
 dist\python-relay\deskferry-python-relay-linux-cp39-vendored.zip
+dist\bin\deskferry-relay-linux-amd64
 dist\bin\deskferry-agent-windows-amd64.exe
 dist\bin\deskferry-agent-configurator-windows-amd64.exe
 dist\bin\deskferry-home-windows-amd64.exe
@@ -427,7 +450,7 @@ Use one shared room name:
 https://test-officialwebsite.azurewebsites.net/relay/<room>
 ```
 
-OCI Python relay example:
+OCI Go relay example:
 
 ```text
 http://217.142.228.117/relay/<room>
@@ -478,7 +501,7 @@ Check:
 
 ### OCI Relay Becomes Unresponsive
 
-The OCI Python relay is supervised by `deskferry-relay.service`, a local health timer, and systemd's runtime watchdog:
+The OCI Go relay is supervised by `deskferry-relay.service`, a local health timer, and systemd's runtime watchdog:
 
 ```bash
 systemctl status deskferry-relay.service
@@ -527,7 +550,7 @@ Build and test the Azure relay:
 .\build\build-azure-relay.ps1
 ```
 
-Rebuild after Go agent/client changes:
+Rebuild after Go agent/client/relay changes:
 
 ```powershell
 .\build\build-go.ps1
@@ -537,6 +560,7 @@ Rebuild after Go agent/client changes:
 
 ```text
 relay/azure-dotnet/      .NET Azure App Service WebSocket relay
+relay/go/                Go WebSocket relay used by the OCI VM deployment
 relay/python/            Python/FastAPI WebSocket relay
 work-agent/windows/service
                          Windows service work-side agent
@@ -554,6 +578,7 @@ build/                   build scripts
 This repo currently contains:
 
 - Azure App Service WebSocket relay source and publish script.
+- Lightweight Go WebSocket relay source and Linux build artifact for OCI.
 - Protocol-compatible Python WebSocket relay source and publish script.
 - Live dashboard with WebSocket status updates.
 - Named-room URL joining under `/relay/<room>`.

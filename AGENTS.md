@@ -2,12 +2,12 @@
 
 ## Project Overview
 
-DeskFerry is a Go + .NET + Python + Android project for an outbound-only RDP rendezvous tunnel. The normal relay is the Azure App Service at `https://test-officialwebsite.azurewebsites.net/relay/`, implemented by `relay/azure-dotnet/`. A protocol-compatible Python/FastAPI relay lives in `relay/python/`; the OCI VM deployment is reachable under `http://217.142.228.117/relay/<room>`. The work-side Windows service may connect to one or more relay room URLs at the same time, while the Windows, macOS, and Android home agents connect to one chosen relay room URL such as `https://test-officialwebsite.azurewebsites.net/relay/workdesk`.
+DeskFerry is a Go + .NET + Python + Android project for an outbound-only RDP rendezvous tunnel. The normal relay is the Azure App Service at `https://test-officialwebsite.azurewebsites.net/relay/`, implemented by `relay/azure-dotnet/`. The OCI Always Free fallback relay is reachable under `http://217.142.228.117/relay/<room>` and is implemented by `relay/go/`. A protocol-compatible Python/FastAPI relay lives in `relay/python/` for alternate hosts and local testing. The work-side Windows service may connect to one or more relay room URLs at the same time, while the Windows, macOS, and Android home agents connect to one chosen relay room URL such as `https://test-officialwebsite.azurewebsites.net/relay/workdesk`.
 
 ## Architecture Rules
 
 - The Azure App Service relay under `/relay/` is the normal broker.
-- The OCI Python relay is a compatible alternate broker, currently deployed as `deskferry-relay.service` on `217.142.228.117`.
+- The OCI Go relay is a compatible alternate broker, currently deployed as `deskferry-relay.service` on `217.142.228.117`.
 - A named room URL under `/relay/<room>` is the normal and only user-facing pairing configuration.
 - The work agent may be configured with multiple relay room URLs simultaneously when they use the same room name, so home apps can choose any reachable relay.
 - Do not reintroduce generated client files or file-based pairing artifacts for the normal path.
@@ -52,7 +52,7 @@ python -m pip install -r relay\python\requirements-dev.txt
 .\build\build-python-relay.ps1
 ```
 
-Build Windows/macOS Go artifacts:
+Build Windows/macOS/relay Go artifacts:
 
 ```powershell
 .\build\build-go.ps1
@@ -64,7 +64,7 @@ Build Android home APK:
 .\build\build-android-home.ps1
 ```
 
-When `work-agent/windows/service`, `work-agent/windows/configurator`, `home-agent/windows`, `home-agent/macos`, `internal/tunnel`, or shared relay behavior changes, run `go test ./...` and `.\build\build-go.ps1`. When `relay/azure-dotnet/` changes, run `.\build\build-azure-relay.ps1`. When `relay/python/` changes, run `.\build\build-python-relay.ps1`. When `home-agent/android/` changes, run `.\build\build-android-home.ps1`.
+When `work-agent/windows/service`, `work-agent/windows/configurator`, `home-agent/windows`, `home-agent/macos`, `relay/go`, `internal/tunnel`, or shared relay behavior changes, run `go test ./...` and `.\build\build-go.ps1`. When `relay/azure-dotnet/` changes, run `.\build\build-azure-relay.ps1`. When `relay/python/` changes, run `.\build\build-python-relay.ps1`. When `home-agent/android/` changes, run `.\build\build-android-home.ps1`.
 
 ## Tooling Notes
 
@@ -86,6 +86,7 @@ Deployable artifacts:
 - `dist/azure-relay/deskferry-azure-relay.zip`
 - `dist/python-relay/deskferry-python-relay.zip`
 - `dist/python-relay/deskferry-python-relay-linux-cp39-vendored.zip`
+- `dist/bin/deskferry-relay-linux-amd64`
 - `dist/bin/deskferry-agent-windows-amd64.exe`
 - `dist/bin/deskferry-agent-configurator-windows-amd64.exe`
 - `dist/bin/deskferry-home-windows-amd64.exe`
@@ -93,7 +94,7 @@ Deployable artifacts:
 - `dist/bin/deskferry-home-macos-amd64`
 - `dist/android/deskferry-home-android-debug.apk`
 
-After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested. For the OCI Python relay, upload the Linux cp39 vendored zip to `/tmp/deskferry-python-relay-vendored.zip`, extract under `/opt/deskferry/python-relay`, and restart `deskferry-relay.service`. The OCI host also has `deskferry-relay-healthcheck.timer`, which checks local `/relay/health` every minute, restarts `deskferry-relay.service` when the app stops responding, and reboots after three consecutive failed post-restart checks. The host is also configured with a 2 GiB swap file, persistent journald, `softdog`, systemd `RuntimeWatchdogSec=60s`, and kernel panic recovery for hung tasks.
+After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested. For the OCI Go relay, upload `dist/bin/deskferry-relay-linux-amd64` to `/tmp/deskferry-relay-linux-amd64`, install it as `/opt/deskferry/go-relay/deskferry-relay`, and restart `deskferry-relay.service`. The OCI host also has `deskferry-relay-healthcheck.timer`, which checks local `/relay/health` every minute, restarts `deskferry-relay.service` when the app stops responding, and reboots after three consecutive failed post-restart checks. The host is also configured with a 2 GiB swap file, persistent journald, `softdog`, systemd `RuntimeWatchdogSec=60s`, and kernel panic recovery for hung tasks.
 
 ## Verification Expectations
 
@@ -124,7 +125,7 @@ python -m pip install -r relay\python\requirements-dev.txt
 .\build\build-python-relay.ps1
 ```
 
-For deployed Python relay changes, also verify:
+For deployed OCI relay changes, also verify:
 
 ```powershell
 curl.exe --proxy http://192.9.200.25:3128 http://217.142.228.117/relay/health

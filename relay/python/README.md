@@ -39,9 +39,9 @@ dist\python-relay\deskferry-python-relay-linux-cp39-vendored.zip
 
 The vendored zip targets Oracle Linux 9's Python 3.9 runtime and includes FastAPI, Uvicorn, and compatibility backports under `vendor/`.
 
-## OCI VM Deployment
+## Linux VM Deployment
 
-The current OCI VM relay is deployed at:
+The active OCI VM deployment now uses the Go relay under `relay/go/`. This Python relay remains available for Python-capable hosts or local testing. A Python Linux VM deployment would use the same room URL shape:
 
 ```text
 http://217.142.228.117/relay/b
@@ -55,7 +55,7 @@ The VM runs the relay directly on port `80` as:
 deskferry-relay.service
 ```
 
-Service layout:
+Example service layout:
 
 ```text
 /opt/deskferry/python-relay/app.py
