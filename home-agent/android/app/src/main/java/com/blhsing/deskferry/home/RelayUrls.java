@@ -2,6 +2,9 @@ package com.blhsing.deskferry.home;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 
 final class RelayUrls {
@@ -40,6 +43,51 @@ final class RelayUrls {
         return new URI(scheme, uri.getUserInfo(), uri.getHost(), uri.getPort(), path, uri.getRawQuery(), null).toString();
     }
 
+    static List<String> normalizeRelayUrls(String value) throws URISyntaxException {
+        List<String> raw = splitRelayUrls(value);
+        if (raw.isEmpty()) {
+            raw = Collections.singletonList(DEFAULT_RELAY_URL);
+        }
+        ArrayList<String> out = new ArrayList<>();
+        for (String relayUrl : raw) {
+            String normalized = normalizeRelayUrl(relayUrl);
+            boolean seen = false;
+            for (String existing : out) {
+                if (existing.equalsIgnoreCase(normalized)) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                out.add(normalized);
+            }
+        }
+        return Collections.unmodifiableList(out);
+    }
+
+    static String joinRelayUrls(List<String> relayUrls) {
+        if (relayUrls == null || relayUrls.isEmpty()) {
+            return DEFAULT_RELAY_URL;
+        }
+        StringBuilder builder = new StringBuilder();
+        for (String relayUrl : relayUrls) {
+            if (builder.length() > 0) {
+                builder.append(';');
+            }
+            builder.append(relayUrl);
+        }
+        return builder.toString();
+    }
+
+    static String primaryRelayUrl(String relayUrls) {
+        try {
+            List<String> normalized = normalizeRelayUrls(relayUrls);
+            return normalized.isEmpty() ? DEFAULT_RELAY_URL : normalized.get(0);
+        } catch (URISyntaxException ex) {
+            return DEFAULT_RELAY_URL;
+        }
+    }
+
     static String webSocketEndpoint(String relayUrl) throws URISyntaxException {
         URI uri = new URI(normalizeRelayUrl(relayUrl));
         String scheme = "https".equals(lower(uri.getScheme())) ? "wss" : "ws";
@@ -54,7 +102,7 @@ final class RelayUrls {
 
     static String dashboardUrl(String relayUrl) {
         try {
-            return normalizeRelayUrl(relayUrl);
+            return normalizeRelayUrl(primaryRelayUrl(relayUrl));
         } catch (URISyntaxException ex) {
             return DEFAULT_RELAY_URL;
         }
@@ -110,6 +158,22 @@ final class RelayUrls {
             }
         }
         return "";
+    }
+
+    private static List<String> splitRelayUrls(String value) {
+        String raw = value == null ? "" : value.trim();
+        if (raw.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String[] parts = raw.split("[\\r\\n;,]+");
+        ArrayList<String> out = new ArrayList<>(parts.length);
+        for (String part : parts) {
+            String relayUrl = part.trim();
+            if (!relayUrl.isEmpty()) {
+                out.add(relayUrl);
+            }
+        }
+        return out;
     }
 
     private static String emptyAs(String value, String fallback) {

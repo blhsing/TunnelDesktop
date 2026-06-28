@@ -25,6 +25,7 @@ import (
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 	"golang.org/x/sys/windows"
+	"nhooyr.io/websocket"
 
 	"deskferry/internal/tunnel"
 )
@@ -38,10 +39,11 @@ const (
 )
 
 type config struct {
-	ListenAddr string `json:"listen_addr"`
-	RelayAddr  string `json:"relay_addr"`
-	Proxy      string `json:"proxy"`
-	RDPUser    string `json:"rdp_user,omitempty"`
+	ListenAddr string   `json:"listen_addr"`
+	RelayAddr  string   `json:"relay_addr"`
+	RelayAddrs []string `json:"relay_addrs,omitempty"`
+	Proxy      string   `json:"proxy"`
+	RDPUser    string   `json:"rdp_user,omitempty"`
 }
 
 type clientApp struct {
@@ -101,6 +103,7 @@ type relayRoomSnapshot struct {
 
 type relaySummary struct {
 	Room       string
+	RelayAddr  string
 	WorkOnline bool
 	HomeOnline bool
 	Waiting    int
@@ -120,7 +123,7 @@ func main() {
 	var proxyFlag string
 	var consoleMode bool
 	var smokeTest bool
-	flag.StringVar(&relayURL, "relay-url", "", "Azure relay room URL")
+	flag.StringVar(&relayURL, "relay-url", "", "relay room URL; separate primary and fallback URLs with semicolons")
 	flag.StringVar(&listenAddr, "listen", "", "local RDP listen address")
 	flag.StringVar(&proxyFlag, "proxy", "", "proxy: env, direct, or http://host:port")
 	flag.BoolVar(&consoleMode, "console", false, "run in the foreground instead of the control panel")
@@ -191,8 +194,8 @@ func (a *clientApp) run(smokeTest bool) error {
 				Title:  "Connection",
 				Layout: Grid{Columns: 4, Spacing: 7},
 				Children: []Widget{
-					Label{Text: "Relay room URL"},
-					LineEdit{AssignTo: &a.relayURL, Text: a.cfg.RelayAddr, CueBanner: defaultRelayURL, ColumnSpan: 3},
+					Label{Text: "Relay room URLs"},
+					LineEdit{AssignTo: &a.relayURL, Text: a.cfg.relayURLText(), CueBanner: defaultRelayURL + ";http://217.142.228.117/relay/workdesk", ColumnSpan: 3},
 					Label{Text: "Local RDP address"},
 					LineEdit{AssignTo: &a.listenAddr, Text: a.cfg.ListenAddr, CueBanner: defaultListenAddr},
 					Label{Text: "Proxy"},
@@ -412,10 +415,10 @@ func (a *clientApp) configFromUI() (config, error) {
 		RDPUser:    strings.TrimSpace(a.rdpUser.Text()),
 	}
 	cfg.applyDefaults()
-	if normalized, err := normalizeRelayURL(cfg.RelayAddr); err != nil {
+	if normalized, err := normalizeRelayURLs(cfg.RelayAddr, cfg.RelayAddrs); err != nil {
 		return config{}, err
 	} else {
-		cfg.RelayAddr = normalized
+		cfg.setRelayAddresses(normalized)
 	}
 	if _, _, err := net.SplitHostPort(cfg.ListenAddr); err != nil {
 		return config{}, fmt.Errorf("local RDP address must be host:port: %w", err)
@@ -431,7 +434,7 @@ func (a *clientApp) setConfig(cfg config) {
 	a.cfg = cfg
 	a.mu.Unlock()
 	a.onUI(func() {
-		_ = a.relayURL.SetText(cfg.RelayAddr)
+		_ = a.relayURL.SetText(cfg.relayURLText())
 		_ = a.listenAddr.SetText(cfg.ListenAddr)
 		_ = a.proxy.SetText(cfg.Proxy)
 		_ = a.rdpUser.SetText(cfg.RDPUser)
@@ -634,7 +637,7 @@ func (a *clientApp) forgetRDPCredentials() {
 
 func (a *clientApp) openDashboard() {
 	cfg := a.currentConfig()
-	if err := shellOpen(dashboardURL(cfg.RelayAddr)); err != nil {
+	if err := shellOpen(dashboardURL(cfg.primaryRelayAddress())); err != nil {
 		a.showError(err)
 	}
 }
@@ -655,7 +658,7 @@ func (a *clientApp) restartHomePresence() {
 func (a *clientApp) homePresenceLoop(ctx context.Context, cfg config) {
 	for {
 		a.setHomePresence("Connecting")
-		conn, err := tunnel.DialWebSocket(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleHomeAgent, "")
+		conn, relayAddr, err := dialWebSocketFallback(ctx, cfg, tunnel.RoleHomeAgent)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -664,7 +667,7 @@ func (a *clientApp) homePresenceLoop(ctx context.Context, cfg config) {
 			a.appendLog("Home status connection failed: %v", err)
 		} else {
 			a.setHomePresence("Online")
-			a.appendLog("Home status connected to %s.", cfg.RelayAddr)
+			a.appendLog("Home status connected to %s.", relayAddr)
 			_, _, err = conn.Read(ctx)
 			tunnel.CloseWebSocket(conn)
 			if ctx.Err() != nil {
@@ -777,6 +780,7 @@ func loadConfig(relayURL, listenAddr, proxyFlag string) (config, error) {
 	}
 	if strings.TrimSpace(relayURL) != "" {
 		cfg.RelayAddr = strings.TrimSpace(relayURL)
+		cfg.RelayAddrs = nil
 	}
 	if strings.TrimSpace(listenAddr) != "" {
 		cfg.ListenAddr = strings.TrimSpace(listenAddr)
@@ -785,11 +789,11 @@ func loadConfig(relayURL, listenAddr, proxyFlag string) (config, error) {
 		cfg.Proxy = strings.TrimSpace(proxyFlag)
 	}
 	cfg.applyDefaults()
-	normalized, err := normalizeRelayURL(cfg.RelayAddr)
+	normalized, err := normalizeRelayURLs(cfg.RelayAddr, cfg.RelayAddrs)
 	if err != nil {
 		return config{}, err
 	}
-	cfg.RelayAddr = normalized
+	cfg.setRelayAddresses(normalized)
 	return cfg, cfg.validate()
 }
 
@@ -797,6 +801,7 @@ func defaultConfig() config {
 	return config{
 		ListenAddr: defaultListenAddr,
 		RelayAddr:  defaultRelayURL,
+		RelayAddrs: []string{defaultRelayURL},
 		Proxy:      "env",
 	}
 }
@@ -830,7 +835,7 @@ func saveSettingsConfig(cfg config) error {
 	}
 	data, err := json.MarshalIndent(config{
 		ListenAddr: cfg.ListenAddr,
-		RelayAddr:  cfg.RelayAddr,
+		RelayAddr:  cfg.relayURLText(),
 		Proxy:      cfg.Proxy,
 		RDPUser:    cfg.RDPUser,
 	}, "", "  ")
@@ -859,6 +864,9 @@ func (c *config) merge(other config) {
 	if strings.TrimSpace(other.RelayAddr) != "" {
 		c.RelayAddr = other.RelayAddr
 	}
+	if len(other.RelayAddrs) > 0 {
+		c.RelayAddrs = append([]string(nil), other.RelayAddrs...)
+	}
 	if strings.TrimSpace(other.Proxy) != "" {
 		c.Proxy = other.Proxy
 	}
@@ -871,7 +879,7 @@ func (c *config) applyDefaults() {
 	if c.ListenAddr == "" {
 		c.ListenAddr = defaultListenAddr
 	}
-	if c.RelayAddr == "" {
+	if c.RelayAddr == "" && len(c.RelayAddrs) == 0 {
 		c.RelayAddr = defaultRelayURL
 	}
 	if c.Proxy == "" {
@@ -880,14 +888,17 @@ func (c *config) applyDefaults() {
 }
 
 func (c config) validate() error {
-	if c.RelayAddr == "" {
+	relayAddrs := c.relayAddresses()
+	if len(relayAddrs) == 0 {
 		return fmt.Errorf("relay URL is required")
 	}
-	if !tunnel.IsWebSocketRelay(c.RelayAddr) {
-		return fmt.Errorf("relay URL must start with https:// or http://")
-	}
-	if _, err := url.ParseRequestURI(c.RelayAddr); err != nil {
-		return fmt.Errorf("relay URL is invalid: %w", err)
+	for _, relayAddr := range relayAddrs {
+		if !tunnel.IsWebSocketRelay(relayAddr) {
+			return fmt.Errorf("relay URL %q must start with https:// or http://", relayAddr)
+		}
+		if _, err := url.ParseRequestURI(relayAddr); err != nil {
+			return fmt.Errorf("relay URL %q is invalid: %w", relayAddr, err)
+		}
 	}
 	return nil
 }
@@ -942,10 +953,43 @@ func handleLocalConn(ctx context.Context, cfg config, localConn net.Conn, remote
 }
 
 func dialRelay(ctx context.Context, cfg config) (net.Conn, error) {
-	return tunnel.DialWebSocketStream(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleClient, "")
+	var errs []string
+	for _, relayAddr := range cfg.relayAddresses() {
+		attemptCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		ws, err := tunnel.DialWebSocket(attemptCtx, relayAddr, cfg.Proxy, tunnel.RoleClient, "")
+		if err == nil {
+			err = tunnel.AwaitWebSocketStart(attemptCtx, ws)
+		}
+		if err == nil {
+			cancel()
+			return tunnel.WebSocketNetConn(ctx, ws), nil
+		}
+		cancel()
+		tunnel.CloseWebSocket(ws)
+		errs = append(errs, fmt.Sprintf("%s: %v", relayAddr, err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, fmt.Errorf("all relay URLs failed: %s", strings.Join(errs, "; "))
 }
 
 func queryRelaySummary(ctx context.Context, cfg config) (relaySummary, error) {
+	var errs []string
+	for _, relayAddr := range cfg.relayAddresses() {
+		summary, err := queryRelaySummaryFor(ctx, cfg.withRelayAddress(relayAddr))
+		if err == nil {
+			return summary, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", relayAddr, err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return relaySummary{}, fmt.Errorf("all relay status checks failed: %s", strings.Join(errs, "; "))
+}
+
+func queryRelaySummaryFor(ctx context.Context, cfg config) (relaySummary, error) {
 	statusURL, room, err := relayStatusURL(cfg.RelayAddr)
 	if err != nil {
 		return relaySummary{}, err
@@ -966,7 +1010,7 @@ func queryRelaySummary(ctx context.Context, cfg config) (relaySummary, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
 		return relaySummary{}, err
 	}
-	summary := relaySummary{Room: room, CheckedAt: snapshot.Time}
+	summary := relaySummary{Room: room, RelayAddr: cfg.RelayAddr, CheckedAt: snapshot.Time}
 	for _, r := range snapshot.Rooms {
 		summary.Waiting += r.WaitingAgents
 		summary.Active += r.ActivePairs
@@ -992,7 +1036,8 @@ func queryRelaySummary(ctx context.Context, cfg config) (relaySummary, error) {
 func formatRelayDetails(summary relaySummary, cfg config) string {
 	lines := []string{
 		"Room: " + emptyAs(summary.Room, "default"),
-		"Relay URL: " + cfg.RelayAddr,
+		"Relay URL: " + emptyAs(summary.RelayAddr, cfg.primaryRelayAddress()),
+		"Configured relays: " + cfg.relayURLText(),
 		fmt.Sprintf("Work agent: %s (%d waiting sockets)", onlineText(summary.WorkOnline), summary.Waiting),
 		fmt.Sprintf("Home app: %s", onlineText(summary.HomeOnline)),
 		fmt.Sprintf("Active RDP streams: %d (%d total)", summary.Active, summary.Total),
@@ -1058,7 +1103,7 @@ func normalizeRelayURL(value string) (string, error) {
 	case "ws":
 		parsed.Scheme = "http"
 	default:
-		return "", fmt.Errorf("relay URL must start with https://")
+		return "", fmt.Errorf("relay URL must start with https:// or http://")
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	if strings.HasSuffix(parsed.Path, "/ws") {
@@ -1068,6 +1113,107 @@ func normalizeRelayURL(value string) (string, error) {
 		parsed.Path = "/relay"
 	}
 	return parsed.String(), nil
+}
+
+func normalizeRelayURLs(value string, extra []string) ([]string, error) {
+	values := splitRelayURLs(value)
+	for _, relayAddr := range extra {
+		values = append(values, splitRelayURLs(relayAddr)...)
+	}
+	if len(values) == 0 {
+		values = []string{defaultRelayURL}
+	}
+	out := make([]string, 0, len(values))
+	for _, relayAddr := range values {
+		normalized, err := normalizeRelayURL(relayAddr)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, normalized)
+	}
+	return uniqueRelayURLs(out), nil
+}
+
+func splitRelayURLs(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\r' || r == '\n' || r == ',' || r == ';'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func uniqueRelayURLs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func joinRelayURLs(values []string) string {
+	return strings.Join(uniqueRelayURLs(values), ";")
+}
+
+func (c *config) setRelayAddresses(values []string) {
+	c.RelayAddrs = append([]string(nil), values...)
+	if len(c.RelayAddrs) > 0 {
+		c.RelayAddr = c.RelayAddrs[0]
+	}
+}
+
+func (c config) relayAddresses() []string {
+	if len(c.RelayAddrs) > 0 {
+		return append([]string(nil), c.RelayAddrs...)
+	}
+	return uniqueRelayURLs(splitRelayURLs(c.RelayAddr))
+}
+
+func (c config) relayURLText() string {
+	return joinRelayURLs(c.relayAddresses())
+}
+
+func (c config) primaryRelayAddress() string {
+	if relays := c.relayAddresses(); len(relays) > 0 {
+		return relays[0]
+	}
+	return defaultRelayURL
+}
+
+func (c config) withRelayAddress(relayAddr string) config {
+	next := c
+	next.RelayAddr = strings.TrimSpace(relayAddr)
+	next.RelayAddrs = []string{next.RelayAddr}
+	return next
+}
+
+func dialWebSocketFallback(ctx context.Context, cfg config, role string) (*websocket.Conn, string, error) {
+	var errs []string
+	for _, relayAddr := range cfg.relayAddresses() {
+		conn, err := tunnel.DialWebSocket(ctx, relayAddr, cfg.Proxy, role, "")
+		if err == nil {
+			return conn, relayAddr, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", relayAddr, err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, "", fmt.Errorf("all relay URLs failed: %s", strings.Join(errs, "; "))
 }
 
 func relayStatusURL(relayAddr string) (string, string, error) {

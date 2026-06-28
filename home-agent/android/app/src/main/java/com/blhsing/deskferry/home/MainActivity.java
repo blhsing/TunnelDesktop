@@ -28,6 +28,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.net.URISyntaxException;
+import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
@@ -116,7 +117,7 @@ public class MainActivity extends Activity {
         root.addView(configCard, cardParams());
 
         configCard.addView(sectionTitle("Connection"));
-        relayUrlField = field("Relay room URL");
+        relayUrlField = field("Primary relay URL; semicolon fallbacks");
         configCard.addView(relayUrlField, matchWrap());
         localPortField = field("Local RDP port");
         localPortField.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -203,7 +204,8 @@ public class MainActivity extends Activity {
         String relayUrl;
         int port;
         try {
-            relayUrl = RelayUrls.normalizeRelayUrl(relayUrlField.getText().toString());
+            List<String> relayUrls = RelayUrls.normalizeRelayUrls(relayUrlField.getText().toString());
+            relayUrl = RelayUrls.joinRelayUrls(relayUrls);
             port = parsePort(localPortField.getText().toString());
         } catch (Exception ex) {
             Toast.makeText(this, ex.getMessage(), Toast.LENGTH_LONG).show();
@@ -268,7 +270,7 @@ public class MainActivity extends Activity {
     private void openDashboard() {
         String relayUrl = relayUrlField.getText().toString();
         try {
-            relayUrl = RelayUrls.normalizeRelayUrl(relayUrl);
+            relayUrl = RelayUrls.joinRelayUrls(RelayUrls.normalizeRelayUrls(relayUrl));
         } catch (URISyntaxException ignored) {
         }
         startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(RelayUrls.dashboardUrl(relayUrl))));

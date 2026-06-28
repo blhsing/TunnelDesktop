@@ -20,12 +20,15 @@ import java.net.Socket;
 import java.net.URISyntaxException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -61,6 +64,7 @@ public class TunnelService extends Service {
     private WebSocket statusSocket;
     private volatile boolean running;
     private volatile String relayUrl = RelayUrls.DEFAULT_RELAY_URL;
+    private volatile List<String> relayUrls = Collections.singletonList(RelayUrls.DEFAULT_RELAY_URL);
     private volatile int localPort = HomePrefs.DEFAULT_LOCAL_PORT;
     private volatile int activeConnections;
     private volatile int totalConnections;
@@ -120,7 +124,8 @@ public class TunnelService extends Service {
         synchronized (lock) {
             stopTunnelLocked();
             try {
-                relayUrl = RelayUrls.normalizeRelayUrl(requestedRelay);
+                relayUrls = RelayUrls.normalizeRelayUrls(requestedRelay);
+                relayUrl = RelayUrls.joinRelayUrls(relayUrls);
                 localPort = sanitizePort(requestedPort);
                 serverSocket = new ServerSocket();
                 serverSocket.setReuseAddress(true);
@@ -130,6 +135,7 @@ public class TunnelService extends Service {
                 totalConnections = 0;
                 updateState("Running", "Connecting", "Checking", null);
                 append("Listening on " + RelayUrls.rdpAddress(localPort) + ".");
+                append("Relay primary: " + relayUrls.get(0) + (relayUrls.size() > 1 ? " (" + (relayUrls.size() - 1) + " fallback)" : "") + ".");
                 startAcceptLoop();
                 startPresenceLoop();
                 startStatusLoop();
@@ -186,38 +192,55 @@ public class TunnelService extends Service {
     private void startPresenceLoop() {
         presenceThread = new Thread(() -> {
             while (running) {
-                CountDownLatch closed = new CountDownLatch(1);
-                try {
-                    Request request = webSocketRequest("home-agent");
-                    WebSocket socket = httpClient.newWebSocket(request, new WebSocketListener() {
-                        @Override
-                        public void onOpen(WebSocket webSocket, Response response) {
-                            presenceSocket = webSocket;
-                            updateState(null, "Online", null, null);
-                            append("Home status connected.");
-                        }
-
-                        @Override
-                        public void onClosed(WebSocket webSocket, int code, String reason) {
-                            closed.countDown();
-                        }
-
-                        @Override
-                        public void onFailure(WebSocket webSocket, Throwable t, Response response) {
-                            if (running) {
-                                updateState(null, "Reconnecting", null, "Home status: " + t.getMessage());
-                            }
-                            closed.countDown();
-                        }
-                    });
-                    presenceSocket = socket;
-                    closed.await();
-                } catch (Exception ex) {
-                    if (running) {
-                        updateState(null, "Reconnecting", null, "Home status: " + ex.getMessage());
+                boolean opened = false;
+                String lastError = "";
+                for (String candidate : relayUrlsSnapshot()) {
+                    if (!running) {
+                        break;
                     }
-                } finally {
-                    closePresenceSocket();
+                    CountDownLatch closed = new CountDownLatch(1);
+                    AtomicBoolean openedCandidate = new AtomicBoolean(false);
+                    AtomicReference<String> failure = new AtomicReference<>("");
+                    try {
+                        Request request = webSocketRequest(candidate, "home-agent");
+                        WebSocket socket = httpClient.newWebSocket(request, new WebSocketListener() {
+                            @Override
+                            public void onOpen(WebSocket webSocket, Response response) {
+                                presenceSocket = webSocket;
+                                openedCandidate.set(true);
+                                updateState(null, "Online", null, null);
+                                append("Home status connected to " + candidate + ".");
+                            }
+
+                            @Override
+                            public void onClosed(WebSocket webSocket, int code, String reason) {
+                                closed.countDown();
+                            }
+
+                            @Override
+                            public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                                failure.set(t.getMessage());
+                                if (running && openedCandidate.get()) {
+                                    updateState(null, "Reconnecting", null, "Home status: " + t.getMessage());
+                                }
+                                closed.countDown();
+                            }
+                        });
+                        presenceSocket = socket;
+                        closed.await();
+                    } catch (Exception ex) {
+                        failure.set(ex.getMessage());
+                    } finally {
+                        closePresenceSocket();
+                    }
+                    if (openedCandidate.get()) {
+                        opened = true;
+                        break;
+                    }
+                    lastError = candidate + ": " + emptyAs(failure.get(), "connection failed");
+                }
+                if (running && !opened) {
+                    updateState(null, "Reconnecting", null, "Home status: " + emptyAs(lastError, "all relay URLs failed"));
                 }
                 sleepQuietly(3000);
             }
@@ -228,42 +251,59 @@ public class TunnelService extends Service {
     private void startStatusLoop() {
         statusThread = new Thread(() -> {
             while (running) {
-                CountDownLatch closed = new CountDownLatch(1);
-                try {
-                    Request request = webSocketRequest("dashboard");
-                    WebSocket socket = httpClient.newWebSocket(request, new WebSocketListener() {
-                        @Override
-                        public void onOpen(WebSocket webSocket, Response response) {
-                            statusSocket = webSocket;
-                            updateState(null, null, "Checking", "Relay status stream connected.");
-                        }
-
-                        @Override
-                        public void onMessage(WebSocket webSocket, String text) {
-                            refreshRelayStatus(text);
-                        }
-
-                        @Override
-                        public void onClosed(WebSocket webSocket, int code, String reason) {
-                            closed.countDown();
-                        }
-
-                        @Override
-                        public void onFailure(WebSocket webSocket, Throwable t, Response response) {
-                            if (running) {
-                                updateState(null, null, "Check relay", "Relay status stream: " + t.getMessage());
-                            }
-                            closed.countDown();
-                        }
-                    });
-                    statusSocket = socket;
-                    closed.await();
-                } catch (Exception ex) {
-                    if (running) {
-                        updateState(null, null, "Check relay", "Relay status stream: " + ex.getMessage());
+                boolean opened = false;
+                String lastError = "";
+                for (String candidate : relayUrlsSnapshot()) {
+                    if (!running) {
+                        break;
                     }
-                } finally {
-                    closeStatusSocket();
+                    CountDownLatch closed = new CountDownLatch(1);
+                    AtomicBoolean openedCandidate = new AtomicBoolean(false);
+                    AtomicReference<String> failure = new AtomicReference<>("");
+                    try {
+                        Request request = webSocketRequest(candidate, "dashboard");
+                        WebSocket socket = httpClient.newWebSocket(request, new WebSocketListener() {
+                            @Override
+                            public void onOpen(WebSocket webSocket, Response response) {
+                                statusSocket = webSocket;
+                                openedCandidate.set(true);
+                                updateState(null, null, "Checking", "Relay status stream connected to " + candidate + ".");
+                            }
+
+                            @Override
+                            public void onMessage(WebSocket webSocket, String text) {
+                                refreshRelayStatus(text);
+                            }
+
+                            @Override
+                            public void onClosed(WebSocket webSocket, int code, String reason) {
+                                closed.countDown();
+                            }
+
+                            @Override
+                            public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                                failure.set(t.getMessage());
+                                if (running && openedCandidate.get()) {
+                                    updateState(null, null, "Check relay", "Relay status stream: " + t.getMessage());
+                                }
+                                closed.countDown();
+                            }
+                        });
+                        statusSocket = socket;
+                        closed.await();
+                    } catch (Exception ex) {
+                        failure.set(ex.getMessage());
+                    } finally {
+                        closeStatusSocket();
+                    }
+                    if (openedCandidate.get()) {
+                        opened = true;
+                        break;
+                    }
+                    lastError = candidate + ": " + emptyAs(failure.get(), "connection failed");
+                }
+                if (running && !opened) {
+                    updateState(null, null, "Check relay", "Relay status stream: " + emptyAs(lastError, "all relay URLs failed"));
                 }
                 sleepQuietly(1500);
             }
@@ -292,7 +332,7 @@ public class TunnelService extends Service {
         }
     }
 
-    private Request webSocketRequest(String role) throws URISyntaxException {
+    private Request webSocketRequest(String relayUrl, String role) throws URISyntaxException {
         String endpoint = RelayUrls.webSocketEndpoint(relayUrl);
         String token = RelayUrls.roomToken(relayUrl, "");
         return new Request.Builder()
@@ -300,8 +340,15 @@ public class TunnelService extends Service {
                 .header("Authorization", "Bearer " + token)
                 .header("X-DeskFerry-Role", role)
                 .header("X-TunnelDesktop-Role", role)
-                .header("User-Agent", "DeskFerry-Android/0.5.2")
+                .header("User-Agent", "DeskFerry-Android/0.5.3")
                 .build();
+    }
+
+    private List<String> relayUrlsSnapshot() {
+        List<String> snapshot = relayUrls;
+        return snapshot == null || snapshot.isEmpty()
+                ? Collections.singletonList(RelayUrls.DEFAULT_RELAY_URL)
+                : snapshot;
     }
 
     private void updateState(String tunnel, String home, String work, String message) {
@@ -444,6 +491,10 @@ public class TunnelService extends Service {
         }
     }
 
+    private static String emptyAs(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value;
+    }
+
     static final class State {
         boolean running;
         String relayUrl;
@@ -485,12 +536,10 @@ public class TunnelService extends Service {
         }
     }
 
-    private final class BridgeSession extends WebSocketListener implements Runnable {
+    private final class BridgeSession implements Runnable {
         private final Socket localSocket;
-        private final CountDownLatch paired = new CountDownLatch(1);
         private final AtomicBoolean closed = new AtomicBoolean(false);
         private volatile WebSocket webSocket;
-        private volatile Throwable failure;
 
         BridgeSession(Socket localSocket) {
             this.localSocket = localSocket;
@@ -504,14 +553,30 @@ public class TunnelService extends Service {
             updateState("Running", null, null, null);
             append("RDP connection from " + remote + ".");
             try {
-                webSocket = httpClient.newWebSocket(webSocketRequest("client"), this);
-                if (!paired.await(30, TimeUnit.SECONDS)) {
-                    throw new IOException("relay did not pair with a work agent");
+                boolean connected = false;
+                String lastError = "";
+                for (String candidate : relayUrlsSnapshot()) {
+                    if (closed.get()) {
+                        break;
+                    }
+                    try {
+                        connectRelay(candidate);
+                    } catch (Exception ex) {
+                        lastError = candidate + ": " + ex.getMessage();
+                        closeWebSocketOnly();
+                        if (!closed.get()) {
+                            append("RDP bridge via " + candidate + " failed: " + ex.getMessage());
+                        }
+                        continue;
+                    }
+                    append("Bridging local RDP connection from " + remote + " through " + candidate + ".");
+                    connected = true;
+                    pipeLocalToRelay();
+                    break;
                 }
-                if (failure != null) {
-                    throw new IOException("relay connection failed", failure);
+                if (!connected && !closed.get()) {
+                    append("RDP bridge failed: " + emptyAs(lastError, "all relay URLs failed"));
                 }
-                pipeLocalToRelay();
             } catch (Exception ex) {
                 if (!closed.get()) {
                     append("RDP bridge failed: " + ex.getMessage());
@@ -522,37 +587,61 @@ public class TunnelService extends Service {
             }
         }
 
-        @Override
-        public void onMessage(WebSocket webSocket, String text) {
-            if ("start".equals(text.trim())) {
-                paired.countDown();
-            }
-        }
-
-        @Override
-        public void onMessage(WebSocket webSocket, ByteString bytes) {
-            try {
-                OutputStream output = localSocket.getOutputStream();
-                synchronized (output) {
-                    output.write(bytes.toByteArray());
-                    output.flush();
+        private void connectRelay(String candidate) throws Exception {
+            CountDownLatch paired = new CountDownLatch(1);
+            AtomicBoolean started = new AtomicBoolean(false);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            WebSocket socket = httpClient.newWebSocket(webSocketRequest(candidate, "client"), new WebSocketListener() {
+                @Override
+                public void onMessage(WebSocket webSocket, String text) {
+                    if ("start".equals(text.trim())) {
+                        started.set(true);
+                        paired.countDown();
+                    }
                 }
-            } catch (IOException ex) {
-                failure = ex;
-                close();
+
+                @Override
+                public void onMessage(WebSocket webSocket, ByteString bytes) {
+                    try {
+                        OutputStream output = localSocket.getOutputStream();
+                        synchronized (output) {
+                            output.write(bytes.toByteArray());
+                            output.flush();
+                        }
+                    } catch (IOException ex) {
+                        failure.set(ex);
+                        close();
+                    }
+                }
+
+                @Override
+                public void onClosed(WebSocket webSocket, int code, String reason) {
+                    paired.countDown();
+                    if (started.get()) {
+                        close();
+                    }
+                }
+
+                @Override
+                public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                    failure.set(t);
+                    paired.countDown();
+                    if (started.get()) {
+                        close();
+                    }
+                }
+            });
+            webSocket = socket;
+            if (!paired.await(30, TimeUnit.SECONDS)) {
+                throw new IOException("relay did not pair with a work agent");
             }
-        }
-
-        @Override
-        public void onClosed(WebSocket webSocket, int code, String reason) {
-            close();
-        }
-
-        @Override
-        public void onFailure(WebSocket webSocket, Throwable t, Response response) {
-            failure = t;
-            paired.countDown();
-            close();
+            Throwable err = failure.get();
+            if (err != null) {
+                throw new IOException("relay connection failed", err);
+            }
+            if (!started.get()) {
+                throw new IOException("relay closed before pairing");
+            }
         }
 
         void close() {
@@ -567,6 +656,14 @@ public class TunnelService extends Service {
             sessions.remove(this);
             activeConnections = Math.max(0, activeConnections - 1);
             updateState("Running", null, null, null);
+        }
+
+        private void closeWebSocketOnly() {
+            WebSocket socket = webSocket;
+            webSocket = null;
+            if (socket != null) {
+                socket.close(1000, "retrying");
+            }
         }
 
         private void pipeLocalToRelay() throws IOException {

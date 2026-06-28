@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"deskferry/internal/tunnel"
+	"nhooyr.io/websocket"
 )
 
 const (
@@ -31,6 +32,7 @@ const (
 
 type config struct {
 	RelayAddr  string
+	RelayAddrs []string
 	ListenAddr string
 	Proxy      string
 }
@@ -57,6 +59,7 @@ type relayRoomSnapshot struct {
 
 type relaySummary struct {
 	Room       string
+	RelayAddr  string
 	WorkOnline bool
 	HomeOnline bool
 	Waiting    int
@@ -76,7 +79,7 @@ func main() {
 	var proxyFlag string
 	var openRDP bool
 	var statusOnly bool
-	flag.StringVar(&relayURL, "relay-url", "", "relay room URL")
+	flag.StringVar(&relayURL, "relay-url", "", "relay room URL; separate primary and fallback URLs with semicolons")
 	flag.StringVar(&listenAddr, "listen", "", "local RDP listen address")
 	flag.StringVar(&proxyFlag, "proxy", "", "proxy: env, direct, or http://host:port")
 	flag.BoolVar(&openRDP, "open-rdp", false, "open the local RDP profile after the tunnel starts")
@@ -113,11 +116,11 @@ func loadConfig(relayURL, listenAddr, proxyFlag string) (config, error) {
 		Proxy:      strings.TrimSpace(proxyFlag),
 	}
 	cfg.applyDefaults()
-	normalized, err := normalizeRelayURL(cfg.RelayAddr)
+	normalized, err := normalizeRelayURLs(cfg.RelayAddr, cfg.RelayAddrs)
 	if err != nil {
 		return config{}, err
 	}
-	cfg.RelayAddr = normalized
+	cfg.setRelayAddresses(normalized)
 	return cfg, cfg.validate()
 }
 
@@ -125,7 +128,7 @@ func (c *config) applyDefaults() {
 	if c.ListenAddr == "" {
 		c.ListenAddr = defaultListenAddr
 	}
-	if c.RelayAddr == "" {
+	if c.RelayAddr == "" && len(c.RelayAddrs) == 0 {
 		c.RelayAddr = defaultRelayURL
 	}
 	if c.Proxy == "" {
@@ -134,14 +137,17 @@ func (c *config) applyDefaults() {
 }
 
 func (c config) validate() error {
-	if c.RelayAddr == "" {
+	relayAddrs := c.relayAddresses()
+	if len(relayAddrs) == 0 {
 		return errors.New("relay URL is required")
 	}
-	if !tunnel.IsWebSocketRelay(c.RelayAddr) {
-		return errors.New("relay URL must start with https:// or http://")
-	}
-	if _, err := url.ParseRequestURI(c.RelayAddr); err != nil {
-		return fmt.Errorf("relay URL is invalid: %w", err)
+	for _, relayAddr := range relayAddrs {
+		if !tunnel.IsWebSocketRelay(relayAddr) {
+			return fmt.Errorf("relay URL %q must start with https:// or http://", relayAddr)
+		}
+		if _, err := url.ParseRequestURI(relayAddr); err != nil {
+			return fmt.Errorf("relay URL %q is invalid: %w", relayAddr, err)
+		}
 	}
 	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {
 		return fmt.Errorf("local RDP address must be host:port: %w", err)
@@ -162,7 +168,7 @@ func run(ctx context.Context, cfg config, openRDP bool) error {
 	}()
 	go homePresenceLoop(ctx, cfg)
 
-	log.Printf("DeskFerry Home listening on %s; point your RDP client at %s", listener.Addr(), rdpTarget(cfg.ListenAddr))
+	log.Printf("DeskFerry Home listening on %s; point your RDP client at %s; relay URLs: %s", listener.Addr(), rdpTarget(cfg.ListenAddr), cfg.relayURLText())
 	if openRDP {
 		if err := launchRDP(cfg); err != nil {
 			log.Printf("open RDP profile: %v", err)
@@ -185,26 +191,26 @@ func run(ctx context.Context, cfg config, openRDP bool) error {
 
 func handleLocalConn(ctx context.Context, cfg config, localConn net.Conn, remote string) {
 	defer localConn.Close()
-	relayConn, err := tunnel.DialWebSocketStream(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleClient, "")
+	relayConn, relayAddr, err := dialRelay(ctx, cfg)
 	if err != nil {
 		log.Printf("relay dial failed for %s: %v", remote, err)
 		return
 	}
-	log.Printf("bridging local RDP connection from %s", remote)
+	log.Printf("bridging local RDP connection from %s through %s", remote, relayAddr)
 	tunnel.Pipe(localConn, relayConn)
 	log.Printf("closed local RDP connection from %s", remote)
 }
 
 func homePresenceLoop(ctx context.Context, cfg config) {
 	for {
-		conn, err := tunnel.DialWebSocket(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleHomeAgent, "")
+		conn, relayAddr, err := dialWebSocketFallback(ctx, cfg, tunnel.RoleHomeAgent)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			log.Printf("home status connection failed: %v", err)
 		} else {
-			log.Printf("home status connected to %s", cfg.RelayAddr)
+			log.Printf("home status connected to %s", relayAddr)
 			_, _, err = conn.Read(ctx)
 			tunnel.CloseWebSocket(conn)
 			if ctx.Err() != nil {
@@ -220,6 +226,28 @@ func homePresenceLoop(ctx context.Context, cfg config) {
 		case <-time.After(3 * time.Second):
 		}
 	}
+}
+
+func dialRelay(ctx context.Context, cfg config) (net.Conn, string, error) {
+	var errs []string
+	for _, relayAddr := range cfg.relayAddresses() {
+		attemptCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		ws, err := tunnel.DialWebSocket(attemptCtx, relayAddr, cfg.Proxy, tunnel.RoleClient, "")
+		if err == nil {
+			err = tunnel.AwaitWebSocketStart(attemptCtx, ws)
+		}
+		if err == nil {
+			cancel()
+			return tunnel.WebSocketNetConn(ctx, ws), relayAddr, nil
+		}
+		cancel()
+		tunnel.CloseWebSocket(ws)
+		errs = append(errs, fmt.Sprintf("%s: %v", relayAddr, err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, "", fmt.Errorf("all relay URLs failed: %s", strings.Join(errs, "; "))
 }
 
 func launchRDP(cfg config) error {
@@ -289,6 +317,21 @@ func rdpTarget(listenAddr string) string {
 }
 
 func queryRelaySummary(ctx context.Context, cfg config) (relaySummary, error) {
+	var errs []string
+	for _, relayAddr := range cfg.relayAddresses() {
+		summary, err := queryRelaySummaryFor(ctx, cfg.withRelayAddress(relayAddr))
+		if err == nil {
+			return summary, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", relayAddr, err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return relaySummary{}, fmt.Errorf("all relay status checks failed: %s", strings.Join(errs, "; "))
+}
+
+func queryRelaySummaryFor(ctx context.Context, cfg config) (relaySummary, error) {
 	statusURL, room, err := relayStatusURL(cfg.RelayAddr)
 	if err != nil {
 		return relaySummary{}, err
@@ -309,7 +352,7 @@ func queryRelaySummary(ctx context.Context, cfg config) (relaySummary, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
 		return relaySummary{}, err
 	}
-	summary := relaySummary{Room: room, CheckedAt: snapshot.Time}
+	summary := relaySummary{Room: room, RelayAddr: cfg.RelayAddr, CheckedAt: snapshot.Time}
 	for _, r := range snapshot.Rooms {
 		summary.Waiting += r.WaitingAgents
 		summary.Active += r.ActivePairs
@@ -335,7 +378,8 @@ func queryRelaySummary(ctx context.Context, cfg config) (relaySummary, error) {
 func formatRelayDetails(summary relaySummary, cfg config) string {
 	lines := []string{
 		"Room: " + emptyAs(summary.Room, "default"),
-		"Relay URL: " + cfg.RelayAddr,
+		"Relay URL: " + emptyAs(summary.RelayAddr, cfg.primaryRelayAddress()),
+		"Configured relays: " + cfg.relayURLText(),
 		fmt.Sprintf("Work agent: %s (%d waiting sockets)", onlineText(summary.WorkOnline), summary.Waiting),
 		fmt.Sprintf("Home app: %s", onlineText(summary.HomeOnline)),
 		fmt.Sprintf("Active RDP streams: %d (%d total)", summary.Active, summary.Total),
@@ -411,6 +455,107 @@ func normalizeRelayURL(value string) (string, error) {
 		parsed.Path = "/relay"
 	}
 	return parsed.String(), nil
+}
+
+func normalizeRelayURLs(value string, extra []string) ([]string, error) {
+	values := splitRelayURLs(value)
+	for _, relayAddr := range extra {
+		values = append(values, splitRelayURLs(relayAddr)...)
+	}
+	if len(values) == 0 {
+		values = []string{defaultRelayURL}
+	}
+	out := make([]string, 0, len(values))
+	for _, relayAddr := range values {
+		normalized, err := normalizeRelayURL(relayAddr)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, normalized)
+	}
+	return uniqueRelayURLs(out), nil
+}
+
+func splitRelayURLs(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\r' || r == '\n' || r == ',' || r == ';'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func uniqueRelayURLs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func joinRelayURLs(values []string) string {
+	return strings.Join(uniqueRelayURLs(values), ";")
+}
+
+func (c *config) setRelayAddresses(values []string) {
+	c.RelayAddrs = append([]string(nil), values...)
+	if len(c.RelayAddrs) > 0 {
+		c.RelayAddr = c.RelayAddrs[0]
+	}
+}
+
+func (c config) relayAddresses() []string {
+	if len(c.RelayAddrs) > 0 {
+		return append([]string(nil), c.RelayAddrs...)
+	}
+	return uniqueRelayURLs(splitRelayURLs(c.RelayAddr))
+}
+
+func (c config) relayURLText() string {
+	return joinRelayURLs(c.relayAddresses())
+}
+
+func (c config) primaryRelayAddress() string {
+	if relays := c.relayAddresses(); len(relays) > 0 {
+		return relays[0]
+	}
+	return defaultRelayURL
+}
+
+func (c config) withRelayAddress(relayAddr string) config {
+	next := c
+	next.RelayAddr = strings.TrimSpace(relayAddr)
+	next.RelayAddrs = []string{next.RelayAddr}
+	return next
+}
+
+func dialWebSocketFallback(ctx context.Context, cfg config, role string) (*websocket.Conn, string, error) {
+	var errs []string
+	for _, relayAddr := range cfg.relayAddresses() {
+		conn, err := tunnel.DialWebSocket(ctx, relayAddr, cfg.Proxy, role, "")
+		if err == nil {
+			return conn, relayAddr, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", relayAddr, err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, "", fmt.Errorf("all relay URLs failed: %s", strings.Join(errs, "; "))
 }
 
 func relayStatusURL(relayAddr string) (string, string, error) {

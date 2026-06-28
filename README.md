@@ -2,7 +2,7 @@
 
 DeskFerry is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/`. The primary relay implementation is .NET, and a protocol-compatible Python/FastAPI relay is also available under `relay/python/`. The work-side Windows service and the Windows, macOS, and Android home agents connect out to relay web services over WebSockets.
 
-Home apps connect to one relay room URL at a time. The work agent can connect to one or more relay room URLs at the same time, as long as they use the same room name. For example:
+Home apps accept one or more relay room URLs in priority order. The first URL is the primary relay; later URLs are fallbacks used when the primary cannot connect or cannot pair an RDP stream. The work agent can connect to one or more relay room URLs at the same time, as long as they use the same room name. For example:
 
 ```text
 https://test-officialwebsite.azurewebsites.net/relay/workdesk
@@ -138,7 +138,11 @@ For the OCI relay, the equivalent room URL is:
 http://217.142.228.117/relay/workdesk
 ```
 
-Use the same room name everywhere. The home app uses one relay URL. The work agent can use both URLs so the home app can reach the work PC through either relay service.
+Use the same room name everywhere. The work agent can use both URLs at the same time. Home apps can also use both URLs as a primary/fallback list, with the primary URL first:
+
+```text
+https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk
+```
 
 ### 4. Install Work Agent
 
@@ -169,15 +173,16 @@ WebSocket mode uses standard proxy environment variables by default, such as `HT
 
 ### 5. Run Windows Home App
 
-Start the Windows home app with the same room URL:
+Start the Windows home app with the same room URL, or with a semicolon-separated primary/fallback URL list:
 
 ```powershell
 .\deskferry-home-windows-amd64.exe -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
+.\deskferry-home-windows-amd64.exe -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk"
 ```
 
-The app opens a friendly control panel and a notification-area icon. Click `Connect` to start the local RDP listener and open Remote Desktop. The default local listener is `127.0.0.1:3390`, avoiding Windows' normal local RDP port `3389`, and the app opens one outbound WebSocket to Azure for each local RDP session.
+The app opens a friendly control panel and a notification-area icon. Click `Connect` to start the local RDP listener and open Remote Desktop. The default local listener is `127.0.0.1:3390`, avoiding Windows' normal local RDP port `3389`, and the app opens one outbound WebSocket to the first reachable relay for each local RDP session.
 
-The home app stores its room URL, local RDP address, and proxy mode in `%APPDATA%\DeskFerry\home-client.json`. Console debug mode is still available:
+The home app stores its room URL list, local RDP address, and proxy mode in `%APPDATA%\DeskFerry\home-client.json`. Console debug mode is still available:
 
 ```powershell
 .\deskferry-home-windows-amd64.exe -console -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk
@@ -190,6 +195,7 @@ Choose the binary for your Mac:
 ```sh
 chmod +x ./deskferry-home-macos-arm64
 ./deskferry-home-macos-arm64 -relay-url https://test-officialwebsite.azurewebsites.net/relay/workdesk -open-rdp
+./deskferry-home-macos-arm64 -relay-url "https://test-officialwebsite.azurewebsites.net/relay/workdesk;http://217.142.228.117/relay/workdesk" -open-rdp
 ```
 
 Use `deskferry-home-macos-amd64` on Intel Macs. The macOS home agent runs in the foreground, listens on `127.0.0.1:3389` by default, keeps the relay dashboard presence socket connected, and opens an `.rdp` profile when `-open-rdp` is supplied. If your RDP app does not open automatically, connect it manually to:
@@ -206,7 +212,7 @@ Install the debug-signed APK:
 dist\android\deskferry-home-android-debug.apk
 ```
 
-Open DeskFerry Home, enter the same relay room URL as the work agent, keep the local RDP port at `3389`, and start the tunnel. In an Android RDP client, connect to:
+Open DeskFerry Home, enter the same relay room URL as the work agent, or a semicolon-separated primary/fallback URL list, keep the local RDP port at `3389`, and start the tunnel. In an Android RDP client, connect to:
 
 ```text
 127.0.0.1:3389
@@ -313,6 +319,7 @@ It:
 - A notification-area icon with open, connect, stop, Remote Desktop, and quit actions.
 - Windows Credential Manager integration for saved RDP login credentials.
 - Persistent home-app presence on the relay dashboard.
+- Primary/fallback relay URL lists for presence, status, and RDP stream connections.
 - A loopback RDP listener, normally `127.0.0.1:3390`.
 - Automatic Remote Desktop launch when the user clicks `Connect`.
 
@@ -323,6 +330,7 @@ It:
 - A foreground local RDP listener, normally `127.0.0.1:3389`.
 - One outbound `client` WebSocket per local RDP connection.
 - A persistent `home-agent` presence WebSocket while it runs.
+- Primary/fallback relay URL lists for presence, status, and RDP stream connections.
 - `-status` for relay room status.
 - `-open-rdp` to write and open a local `.rdp` profile with the configured loopback target.
 
@@ -338,6 +346,7 @@ It provides:
 - One outbound `client` WebSocket per local RDP connection.
 - A persistent `home-agent` presence WebSocket while the service is running.
 - A persistent `dashboard` WebSocket for real-time work-agent and stream status.
+- Primary/fallback relay URL lists for presence, status, and RDP stream connections.
 
 Good free Android RDP client options include Microsoft's Remote Desktop/Windows App client and the open-source FreeRDP-based aFreeRDP client. Configure the RDP client to connect to the DeskFerry local target shown in the Android app.
 
@@ -425,7 +434,7 @@ Rules:
 - `<room>` is created automatically on first use.
 - Reusing the same URL joins the same room.
 - The work agent may use multiple relay URLs at once when each URL uses the same `<room>`.
-- The home app chooses one relay URL for the current connection.
+- Home apps may use multiple relay URLs as an ordered primary/fallback list when each URL uses the same `<room>`.
 - The WebSocket endpoint is derived automatically as `/relay/<room>/ws`.
 - The base `/relay/` path is an overview dashboard.
 - No generated pairing files are required for the normal Azure WebSocket path.
