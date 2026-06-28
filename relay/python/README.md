@@ -70,10 +70,16 @@ PYTHONPATH=/opt/deskferry/python-relay/vendor
 /usr/bin/python3 -m uvicorn app:app --host 0.0.0.0 --port 80 --proxy-headers
 ```
 
+The VM is configured with a 2 GiB swap file, persistent journald, `softdog` plus systemd `RuntimeWatchdogSec=60s`, and kernel panic recovery for hung tasks. The `deskferry-relay-healthcheck.timer` unit checks `http://127.0.0.1/relay/health` every minute, restarts `deskferry-relay.service` when the local health endpoint fails, and reboots the VM after three consecutive failed post-restart checks.
+
 Useful checks on the VM:
 
 ```sh
 systemctl status deskferry-relay
+systemctl status deskferry-relay-healthcheck.timer
+systemctl show --property=RuntimeWatchdogUSec --property=RebootWatchdogUSec
+free -h
+swapon --show
 curl -fsS http://127.0.0.1/relay/health
 curl -fsS 'http://127.0.0.1/relay/status?room=b'
 ```
