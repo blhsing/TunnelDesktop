@@ -93,7 +93,7 @@ Deployable artifacts:
 - `dist/bin/deskferry-home-macos-amd64`
 - `dist/android/deskferry-home-android-debug.apk`
 
-After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested. For the OCI Python relay, upload the Linux cp39 vendored zip to `/tmp/deskferry-python-relay-vendored.zip`, extract under `/opt/deskferry/python-relay`, and restart `deskferry-relay.service`.
+After code changes, build the relevant artifacts. The user prefers deployment after code changes. Use the authenticated browser/Kudu path for the Azure App Service when requested. For the OCI Python relay, upload the Linux cp39 vendored zip to `/tmp/deskferry-python-relay-vendored.zip`, extract under `/opt/deskferry/python-relay`, and restart `deskferry-relay.service`. The OCI host also has `deskferry-relay-healthcheck.timer`, which checks local `/relay/health` every minute and restarts `deskferry-relay.service` when the app stops responding.
 
 ## Verification Expectations
 

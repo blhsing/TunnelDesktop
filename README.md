@@ -39,6 +39,8 @@ The Android app is a home-agent client like the Windows and macOS home agents. I
 - [Troubleshooting](#troubleshooting)
   - [Agent Self-Test Fails Through Proxy](#agent-self-test-fails-through-proxy)
   - [Home App Connects But RDP Fails](#home-app-connects-but-rdp-fails)
+  - [OCI Relay Becomes Unresponsive](#oci-relay-becomes-unresponsive)
+  - [Saved RDP Login](#saved-rdp-login)
   - [Azure Relay Status](#azure-relay-status)
 - [Development](#development)
 - [Repository Layout](#repository-layout)
@@ -123,6 +125,8 @@ The vendored zip is for Oracle Linux 9's system Python 3.9 and avoids running `p
 ```text
 /usr/bin/python3 -m uvicorn app:app --host 0.0.0.0 --port 80 --proxy-headers
 ```
+
+The current OCI host also has a local systemd health timer, `deskferry-relay-healthcheck.timer`, that checks `http://127.0.0.1/relay/health` every minute and restarts `deskferry-relay.service` when the relay process stops responding. This keeps application-level hangs from requiring a manual reboot, but it cannot recover a full guest OS or network-stack freeze.
 
 ### 3. Choose A Room URL
 
@@ -466,6 +470,18 @@ Check:
 - Work PC allows RDP.
 - The configured Windows account is allowed to log in remotely.
 - The home app local listen port is not already in use. If `127.0.0.1:3389` fails on the home PC, use `127.0.0.1:3390`.
+
+### OCI Relay Becomes Unresponsive
+
+The OCI Python relay is supervised by `deskferry-relay.service` and a local health timer:
+
+```bash
+systemctl status deskferry-relay.service
+systemctl status deskferry-relay-healthcheck.timer
+journalctl -u deskferry-relay-healthcheck.service -n 50
+```
+
+The health timer restarts the relay when the local `/relay/health` endpoint fails. If SSH and HTTP both hang while OCI still shows the VM as running, the guest OS or virtual network path is wedged; a local timer cannot run in that state. Use an OCI instance reset, OCI-side monitoring with a recovery action, or a larger/more reliable relay host for that failure mode.
 
 ### Saved RDP Login
 
