@@ -1,5 +1,9 @@
 # DeskFerry
 
+<p align="center">
+  <img src="home-agent/windows/app-icon-256.png" alt="DeskFerry icon" width="144">
+</p>
+
 DeskFerry is an outbound-only RDP rendezvous tunnel for a work PC that cannot accept inbound connections. The current architecture uses an Azure App Service relay at `https://test-officialwebsite.azurewebsites.net/relay/` and an OCI Always Free fallback relay at `http://217.142.228.117/relay/`. The Azure relay implementation is .NET, the OCI relay implementation is a lightweight Go service, and a protocol-compatible Python/FastAPI relay is also available under `relay/python/`. The work-side Windows service and the Windows, macOS, and Android home agents connect out to relay web services over WebSockets.
 
 Home apps accept one or more relay room URLs in priority order. The first URL is the primary relay; later URLs are fallbacks used when the primary cannot connect or cannot pair an RDP stream. The Windows, Android, and work-agent configurator UIs manage these URLs as ordered lists with add, edit, delete, and reorder controls. The work agent can connect to one or more relay room URLs at the same time, as long as they use the same room name. For example:
