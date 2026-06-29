@@ -169,7 +169,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, hub *RelayHub, room
 	case dashboardRole:
 		hub.ServeDashboard(ctx, c, remote, room)
 	case "agent":
-		hub.ServeAgent(ctx, token, c, remote)
+		hub.ServeAgent(ctx, token, c, remote, readAgentIdentity(r))
 	case "client":
 		hub.ServeClient(ctx, token, c, remote)
 	case "home-agent":
@@ -233,6 +233,28 @@ func remoteAddr(r *http.Request) string {
 	return "unknown"
 }
 
+func readAgentIdentity(r *http.Request) AgentIdentity {
+	return AgentIdentity{
+		Instance: cleanAgentIdentity(r.Header.Get("X-DeskFerry-Agent-Instance")),
+		Slot:     cleanAgentIdentity(r.Header.Get("X-DeskFerry-Agent-Slot")),
+	}
+}
+
+func cleanAgentIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	for _, r := range value {
+		if b.Len() >= 64 {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func roomID(token string) string {
 	raw := strings.Trim(strings.TrimSpace(token), "/")
 	if raw == "" {
@@ -276,10 +298,10 @@ func newRelayHub() *RelayHub {
 	}
 }
 
-func (h *RelayHub) ServeAgent(ctx context.Context, token string, c *websocket.Conn, remote string) {
+func (h *RelayHub) ServeAgent(ctx context.Context, token string, c *websocket.Conn, remote string, identity AgentIdentity) {
 	room := h.roomFor(token)
-	waiting := room.EnqueueAgent(c, remote)
-	log.Printf("agent waiting room=%s remote=%s", room.ID, remote)
+	waiting, replaced := room.EnqueueAgent(c, remote, identity)
+	log.Printf("agent waiting room=%s remote=%s key=%s replaced=%d", room.ID, remote, identity.LogString(), replaced)
 	h.NotifyDashboards()
 
 	var peer *HomePeer
@@ -490,17 +512,21 @@ func NewRelayRoom(id string) *RelayRoom {
 	return &RelayRoom{ID: id}
 }
 
-func (r *RelayRoom) EnqueueAgent(c *websocket.Conn, remote string) *WaitingAgent {
-	waiting := NewWaitingAgent(c, remote)
+func (r *RelayRoom) EnqueueAgent(c *websocket.Conn, remote string, identity AgentIdentity) (*WaitingAgent, int) {
+	waiting := NewWaitingAgent(c, remote, identity)
 	now := time.Now().UTC()
 	remoteCopy := remote
 	r.mu.Lock()
 	r.pruneClosedAgentsLocked()
+	replaced := r.replaceAgentLocked(identity)
 	r.agents = append(r.agents, waiting)
 	r.lastAgentRemote = &remoteCopy
 	r.lastAgentConnectedAt = &now
 	r.mu.Unlock()
-	return waiting
+	for _, agent := range replaced {
+		closeQuietly(agent.Conn, websocket.StatusNormalClosure, "replaced by newer agent socket")
+	}
+	return waiting, len(replaced)
 }
 
 func (r *RelayRoom) TryTakeAgent() *WaitingAgent {
@@ -618,23 +644,63 @@ func (r *RelayRoom) pruneClosedAgentsLocked() {
 	r.agents = kept
 }
 
+func (r *RelayRoom) replaceAgentLocked(identity AgentIdentity) []*WaitingAgent {
+	if !identity.Valid() {
+		return nil
+	}
+	replaced := make([]*WaitingAgent, 0, 1)
+	kept := r.agents[:0]
+	for _, agent := range r.agents {
+		if agent.Identity.Equal(identity) {
+			agent.Cancel()
+			replaced = append(replaced, agent)
+			continue
+		}
+		kept = append(kept, agent)
+	}
+	r.agents = kept
+	return replaced
+}
+
+type AgentIdentity struct {
+	Instance string
+	Slot     string
+}
+
+func (i AgentIdentity) Valid() bool {
+	return i.Instance != "" && i.Slot != ""
+}
+
+func (i AgentIdentity) Equal(other AgentIdentity) bool {
+	return i.Instance == other.Instance && i.Slot == other.Slot && i.Valid()
+}
+
+func (i AgentIdentity) LogString() string {
+	if !i.Valid() {
+		return "legacy"
+	}
+	return i.Instance + "/" + i.Slot
+}
+
 type WaitingAgent struct {
-	Conn   *websocket.Conn
-	Remote string
-	Paired chan *HomePeer
-	Done   chan struct{}
+	Conn     *websocket.Conn
+	Remote   string
+	Identity AgentIdentity
+	Paired   chan *HomePeer
+	Done     chan struct{}
 
 	closed atomic.Bool
 	paired atomic.Bool
 	once   sync.Once
 }
 
-func NewWaitingAgent(c *websocket.Conn, remote string) *WaitingAgent {
+func NewWaitingAgent(c *websocket.Conn, remote string, identity AgentIdentity) *WaitingAgent {
 	return &WaitingAgent{
-		Conn:   c,
-		Remote: remote,
-		Paired: make(chan *HomePeer, 1),
-		Done:   make(chan struct{}),
+		Conn:     c,
+		Remote:   remote,
+		Identity: identity,
+		Paired:   make(chan *HomePeer, 1),
+		Done:     make(chan struct{}),
 	}
 }
 

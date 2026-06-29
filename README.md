@@ -313,6 +313,7 @@ Default behavior:
 - `-relay-url <url>` selects a named room.
 - `-relay-url` can be repeated to add more relay URLs.
 - The service keeps a small pool of idle outbound WebSockets per configured relay URL.
+- Each installed work agent keeps a persistent local agent identity and tags each idle socket by slot, allowing relays to replace stale idle sockets after reconnects or service restarts.
 - When any configured relay pairs a socket, the agent dials `127.0.0.1:3389` and pipes bytes.
 
 Debug and operations:
@@ -463,6 +464,7 @@ Rules:
 - Reusing the same URL joins the same room.
 - The work agent may use multiple relay URLs at once when each URL uses the same `<room>`.
 - Home apps may use multiple relay URLs as an ordered primary/fallback list when each URL uses the same `<room>`; graphical apps treat the first row as primary and later rows as fallbacks.
+- Relays accept work-agent identity headers and keep only one waiting socket per agent instance and slot, preventing reconnects from inflating idle work-socket counts.
 - The WebSocket endpoint is derived automatically as `/relay/<room>/ws`.
 - The base `/relay/` path is an overview dashboard.
 - No generated pairing files are required for the normal Azure WebSocket path.

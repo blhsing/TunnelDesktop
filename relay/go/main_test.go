@@ -118,6 +118,37 @@ func TestAgentClientPairAndBridgeBytes(t *testing.T) {
 	}
 }
 
+func TestAgentIdentityReplacesExistingWaitingSocket(t *testing.T) {
+	server := httptest.NewServer(newServer())
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	headers := http.Header{
+		"X-DeskFerry-Agent-Instance": []string{"unit-agent"},
+		"X-DeskFerry-Agent-Slot":     []string{"2"},
+	}
+	first := dialRoleHeaders(t, ctx, server.URL, "/relay/unit-replace/ws", "agent", headers)
+	defer first.Close(websocket.StatusNormalClosure, "")
+	status := getStatus(t, server.URL, "unit-replace")
+	if len(status.Rooms) != 1 || status.Rooms[0].WaitingAgents != 1 {
+		t.Fatalf("initial waiting agents = %+v, want 1", status.Rooms)
+	}
+
+	second := dialRoleHeaders(t, ctx, server.URL, "/relay/unit-replace/ws", "agent", headers)
+	defer second.Close(websocket.StatusNormalClosure, "")
+	status = getStatus(t, server.URL, "unit-replace")
+	if len(status.Rooms) != 1 || status.Rooms[0].WaitingAgents != 1 {
+		t.Fatalf("replacement waiting agents = %+v, want 1", status.Rooms)
+	}
+
+	readCtx, stopRead := context.WithTimeout(ctx, 2*time.Second)
+	defer stopRead()
+	if _, _, err := first.Read(readCtx); err == nil {
+		t.Fatal("replaced agent socket stayed readable/open")
+	}
+}
+
 func TestDashboardWebSocketReceivesSnapshot(t *testing.T) {
 	server := httptest.NewServer(newServer())
 	defer server.Close()
@@ -144,9 +175,17 @@ func TestDashboardWebSocketReceivesSnapshot(t *testing.T) {
 }
 
 func dialRole(t *testing.T, ctx context.Context, baseURL, path, role string) *websocket.Conn {
+	return dialRoleHeaders(t, ctx, baseURL, path, role, nil)
+}
+
+func dialRoleHeaders(t *testing.T, ctx context.Context, baseURL, path, role string, headers http.Header) *websocket.Conn {
 	t.Helper()
 	url := "ws" + strings.TrimPrefix(baseURL, "http") + path
-	headers := http.Header{}
+	if headers == nil {
+		headers = http.Header{}
+	} else {
+		headers = headers.Clone()
+	}
 	if role != "" {
 		headers.Set("X-DeskFerry-Role", role)
 	}

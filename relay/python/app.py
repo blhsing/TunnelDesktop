@@ -104,6 +104,24 @@ def read_token(websocket: WebSocket) -> str | None:
     return room or "default"
 
 
+def clean_agent_identity(value: str | None) -> str:
+    raw = (value or "").strip()
+    out: list[str] = []
+    for ch in raw:
+        if len(out) >= 64:
+            break
+        if "a" <= ch <= "z" or "A" <= ch <= "Z" or "0" <= ch <= "9" or ch in "-_.":
+            out.append(ch)
+    return "".join(out)
+
+
+def read_agent_identity(websocket: WebSocket) -> AgentIdentity:
+    return AgentIdentity(
+        clean_agent_identity(websocket.headers.get("x-deskferry-agent-instance")),
+        clean_agent_identity(websocket.headers.get("x-deskferry-agent-slot")),
+    )
+
+
 async def close_quietly(websocket: WebSocket, code: int = 1000, reason: str = "") -> None:
     try:
         if websocket.application_state == WebSocketState.CONNECTED:
@@ -145,6 +163,20 @@ async def send_start(websocket: WebSocket, side: str, room: str, remote: str) ->
 
 
 @dataclass
+class AgentIdentity:
+    instance: str = ""
+    slot: str = ""
+
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.instance and self.slot)
+
+    @property
+    def log_string(self) -> str:
+        return f"{self.instance}/{self.slot}" if self.is_valid else "legacy"
+
+
+@dataclass
 class HomePeer:
     websocket: WebSocket
     remote: str
@@ -156,6 +188,7 @@ class HomePeer:
 class WaitingAgent:
     websocket: WebSocket
     remote: str
+    identity: AgentIdentity = field(default_factory=AgentIdentity)
     paired: asyncio.Future[HomePeer] = field(default_factory=asyncio.Future)
 
     @property
@@ -190,14 +223,27 @@ class RelayRoom:
         self._last_client_connected_at: datetime | None = None
         self._last_client_disconnected_at: datetime | None = None
 
-    async def enqueue_agent(self, websocket: WebSocket, remote: str) -> WaitingAgent:
-        waiting = WaitingAgent(websocket, remote)
+    async def enqueue_agent(self, websocket: WebSocket, remote: str, identity: AgentIdentity) -> tuple[WaitingAgent, int]:
+        waiting = WaitingAgent(websocket, remote, identity)
+        replaced: list[WaitingAgent] = []
         async with self._lock:
             self._prune_closed_agents_locked()
+            if identity.is_valid:
+                kept: deque[WaitingAgent] = deque()
+                while self._agents:
+                    agent = self._agents.popleft()
+                    if agent.identity == identity:
+                        agent.try_cancel()
+                        replaced.append(agent)
+                    else:
+                        kept.append(agent)
+                self._agents = kept
             self._agents.append(waiting)
             self._last_agent_remote = remote
             self._last_agent_connected_at = utc_now()
-        return waiting
+        for agent in replaced:
+            await close_quietly(agent.websocket, reason="replaced by newer agent socket")
+        return waiting, len(replaced)
 
     async def try_take_agent(self) -> WaitingAgent | None:
         async with self._lock:
@@ -299,10 +345,17 @@ class RelayHub:
         self._rooms: dict[str, RelayRoom] = {}
         self._dashboards: dict[str, DashboardClient] = {}
 
-    async def serve_agent(self, token: str, websocket: WebSocket, remote: str) -> None:
+    async def serve_agent(
+        self,
+        token: str,
+        websocket: WebSocket,
+        remote: str,
+        identity: AgentIdentity | None = None,
+    ) -> None:
         room = await self._room_for(token)
-        waiting = await room.enqueue_agent(websocket, remote)
-        logger.info("agent waiting room=%s remote=%s", room.id, remote)
+        identity = identity or AgentIdentity()
+        waiting, replaced = await room.enqueue_agent(websocket, remote, identity)
+        logger.info("agent waiting room=%s remote=%s key=%s replaced=%s", room.id, remote, identity.log_string, replaced)
         self.notify_dashboards()
 
         peer: HomePeer | None = None
@@ -485,7 +538,7 @@ async def relay_websocket(websocket: WebSocket, room: str | None) -> None:
     if role == DASHBOARD_ROLE:
         await hub.serve_dashboard(websocket, remote, room)
     elif role == "agent":
-        await hub.serve_agent(token, websocket, remote)
+        await hub.serve_agent(token, websocket, remote, read_agent_identity(websocket))
     elif role == "client":
         await hub.serve_client(token, websocket, remote)
     elif role == "home-agent":

@@ -10,6 +10,7 @@ DeskFerry is a Go + .NET + Python + Android project for an outbound-only RDP ren
 - The OCI Go relay is a compatible alternate broker, currently deployed as `deskferry-relay.service` on `217.142.228.117`.
 - A named room URL under `/relay/<room>` is the normal and only user-facing pairing configuration.
 - The work agent may be configured with multiple relay room URLs simultaneously when they use the same room name, so home apps can choose any reachable relay.
+- The work agent sends a persistent agent identity plus slot number on idle `agent` WebSockets; relays should replace older waiting sockets with the same identity/slot instead of counting duplicates.
 - Graphical relay URL list UIs should use CRUD controls with inline or selected-row editing plus drag-to-reorder; avoid returning to semicolon-separated or multiline free-form entry for user-facing multi-value relay URLs.
 - Do not reintroduce generated client files or file-based pairing artifacts for the normal path.
 - The Azure relay WebSocket endpoint is `/relay/ws` for the overview room and `/relay/<room>/ws` for named rooms.

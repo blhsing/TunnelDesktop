@@ -68,3 +68,31 @@ func TestConfigFileRelayAddrsAreNormalized(t *testing.T) {
 		t.Fatalf("relayAddresses() = %#v, want %#v", got, want)
 	}
 }
+
+func TestLoadOrCreateAgentIDPersists(t *testing.T) {
+	t.Setenv("ProgramData", t.TempDir())
+	t.Setenv("APPDATA", "")
+
+	first, err := loadOrCreateAgentID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 32 {
+		t.Fatalf("agent id length = %d, want 32", len(first))
+	}
+
+	second, err := loadOrCreateAgentID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != first {
+		t.Fatalf("second agent id = %q, want %q", second, first)
+	}
+}
+
+func TestCleanAgentIdentity(t *testing.T) {
+	got := cleanAgentIdentity(" unit/agent:slot!* ")
+	if got != "unitagentslot" {
+		t.Fatalf("cleanAgentIdentity() = %q", got)
+	}
+}

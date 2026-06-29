@@ -118,6 +118,10 @@ func WebSocketNetConn(ctx context.Context, c *websocket.Conn) net.Conn {
 }
 
 func DialWebSocket(ctx context.Context, relayAddr, proxySpec, role, token string) (*websocket.Conn, error) {
+	return DialWebSocketWithHeaders(ctx, relayAddr, proxySpec, role, token, nil)
+}
+
+func DialWebSocketWithHeaders(ctx context.Context, relayAddr, proxySpec, role, token string, extraHeaders http.Header) (*websocket.Conn, error) {
 	if err := validateWebSocketRole(role); err != nil {
 		return nil, err
 	}
@@ -131,6 +135,13 @@ func DialWebSocket(ctx context.Context, relayAddr, proxySpec, role, token string
 	header.Set("X-DeskFerry-Role", role)
 	header.Set("X-TunnelDesktop-Role", role)
 	header.Set("User-Agent", "DeskFerry/0.2")
+	for name, values := range extraHeaders {
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				header.Add(name, value)
+			}
+		}
+	}
 	c, resp, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
 		HTTPClient:      webSocketHTTPClient(relayAddr, proxySpec),
 		HTTPHeader:      header,

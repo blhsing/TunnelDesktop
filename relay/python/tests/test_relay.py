@@ -4,7 +4,7 @@ import asyncio
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketState
 
-from app import RelayHub, app, room_id
+from app import AgentIdentity, RelayHub, app, room_id
 
 
 class FakeWebSocket:
@@ -139,5 +139,34 @@ def test_client_skips_stale_waiting_agent():
         for task in (client_task, stale_task, live_task):
             task.cancel()
         await asyncio.gather(client_task, stale_task, live_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_agent_identity_replaces_existing_waiting_socket():
+    async def scenario():
+        hub = RelayHub()
+        first = FakeWebSocket()
+        second = FakeWebSocket()
+        identity = AgentIdentity("unit-agent", "2")
+
+        first_task = asyncio.create_task(hub.serve_agent("unit-replace", first, "work-1", identity))
+        await asyncio.sleep(0)
+        assert (await hub.snapshot("unit-replace"))["rooms"][0]["waiting_agents"] == 1
+
+        second_task = asyncio.create_task(hub.serve_agent("unit-replace", second, "work-2", identity))
+        for _ in range(50):
+            status = await hub.snapshot("unit-replace")
+            if status["rooms"][0]["waiting_agents"] == 1 and first.closed:
+                break
+            await asyncio.sleep(0.01)
+
+        status = await hub.snapshot("unit-replace")
+        assert status["rooms"][0]["waiting_agents"] == 1
+        assert first.closed is True
+
+        for task in (first_task, second_task):
+            task.cancel()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
 
     asyncio.run(scenario())

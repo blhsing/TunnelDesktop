@@ -53,7 +53,7 @@ async Task RelayWebSocketHandler(HttpContext context, RelayHub hub)
             await hub.ServeDashboardAsync(socket, remote, ReadRoom(context), context.RequestAborted);
             break;
         case "agent":
-            await hub.ServeAgentAsync(token, socket, remote, context.RequestAborted);
+            await hub.ServeAgentAsync(token, socket, remote, ReadAgentIdentity(context.Request), context.RequestAborted);
             break;
         case "client":
             await hub.ServeClientAsync(token, socket, remote, context.RequestAborted);
@@ -112,6 +112,35 @@ static string RemoteAddress(HttpContext context)
         return forwarded.Split(',')[0].Trim();
     }
     return context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+}
+
+static AgentIdentity ReadAgentIdentity(HttpRequest request)
+{
+    return new AgentIdentity(
+        CleanAgentIdentity(request.Headers["X-DeskFerry-Agent-Instance"].FirstOrDefault()),
+        CleanAgentIdentity(request.Headers["X-DeskFerry-Agent-Slot"].FirstOrDefault()));
+}
+
+static string CleanAgentIdentity(string? value)
+{
+    var raw = value?.Trim() ?? "";
+    if (raw.Length == 0)
+    {
+        return "";
+    }
+    var builder = new StringBuilder(Math.Min(raw.Length, 64));
+    foreach (var c in raw)
+    {
+        if (builder.Length >= 64)
+        {
+            break;
+        }
+        if (c is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_' or '.')
+        {
+            builder.Append(c);
+        }
+    }
+    return builder.ToString();
 }
 
 static string IconSvg() => """
@@ -494,11 +523,11 @@ sealed class RelayHub
         _log = log;
     }
 
-    public async Task ServeAgentAsync(string token, WebSocket socket, string remote, CancellationToken abort)
+    public async Task ServeAgentAsync(string token, WebSocket socket, string remote, AgentIdentity identity, CancellationToken abort)
     {
         var room = RoomFor(token);
-        var waiting = room.EnqueueAgent(socket, remote);
-        _log.LogInformation("agent waiting room={Room} remote={Remote}", room.Id, remote);
+        var (waiting, replaced) = room.EnqueueAgent(socket, remote, identity);
+        _log.LogInformation("agent waiting room={Room} remote={Remote} key={AgentKey} replaced={Replaced}", room.Id, remote, identity.LogString, replaced);
         NotifyDashboards();
 
         HomePeer? peer = null;
@@ -813,17 +842,39 @@ sealed class RelayRoom
 
     public string Id { get; }
 
-    public WaitingAgent EnqueueAgent(WebSocket socket, string remote)
+    public (WaitingAgent Agent, int Replaced) EnqueueAgent(WebSocket socket, string remote, AgentIdentity identity)
     {
-        var agent = new WaitingAgent(socket, remote);
+        var agent = new WaitingAgent(socket, remote, identity);
+        List<WaitingAgent> replaced = [];
         lock (_gate)
         {
             PruneClosedAgents();
+            if (identity.IsValid)
+            {
+                var count = _agents.Count;
+                for (var i = 0; i < count; i++)
+                {
+                    var existing = _agents.Dequeue();
+                    if (existing.Identity == identity)
+                    {
+                        existing.TryCancel();
+                        replaced.Add(existing);
+                    }
+                    else
+                    {
+                        _agents.Enqueue(existing);
+                    }
+                }
+            }
             _agents.Enqueue(agent);
             _lastAgentRemote = remote;
             _lastAgentConnectedAt = DateTimeOffset.UtcNow;
         }
-        return agent;
+        foreach (var existing in replaced)
+        {
+            _ = CloseQuietlyAsync(existing.Socket);
+        }
+        return (agent, replaced.Count);
     }
 
     public WaitingAgent? TryTakeAgent()
@@ -847,6 +898,15 @@ sealed class RelayRoom
     {
         lock (_gate)
         {
+            var count = _agents.Count;
+            for (var i = 0; i < count; i++)
+            {
+                var agent = _agents.Dequeue();
+                if (!ReferenceEquals(agent, waiting))
+                {
+                    _agents.Enqueue(agent);
+                }
+            }
             _lastAgentDisconnectedAt = DateTimeOffset.UtcNow;
         }
     }
@@ -1005,19 +1065,27 @@ sealed class WaitingAgent
 {
     private readonly TaskCompletionSource<HomePeer> _paired = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public WaitingAgent(WebSocket socket, string remote)
+    public WaitingAgent(WebSocket socket, string remote, AgentIdentity identity)
     {
         Socket = socket;
         Remote = remote;
+        Identity = identity;
     }
 
     public WebSocket Socket { get; }
     public string Remote { get; }
-    public bool IsOpen => Socket.State == WebSocketState.Open;
+    public AgentIdentity Identity { get; }
+    public bool IsOpen => Socket.State == WebSocketState.Open && !_paired.Task.IsCompleted;
 
     public Task<HomePeer> WaitAsync() => _paired.Task;
     public bool TryPair(HomePeer peer) => _paired.TrySetResult(peer);
     public void TryCancel() => _paired.TrySetCanceled();
+}
+
+sealed record AgentIdentity(string Instance, string Slot)
+{
+    public bool IsValid => Instance.Length > 0 && Slot.Length > 0;
+    public string LogString => IsValid ? $"{Instance}/{Slot}" : "legacy";
 }
 
 sealed record HomePeer(WebSocket Socket, string Remote, TaskCompletionSource Done, TaskCompletionSource<string> Started);

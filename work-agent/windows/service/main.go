@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +31,8 @@ import (
 
 const serviceName = "DeskFerryAgent"
 const defaultRelayURL = "https://test-officialwebsite.azurewebsites.net/relay/"
+const agentIDHeader = "X-DeskFerry-Agent-Instance"
+const agentSlotHeader = "X-DeskFerry-Agent-Slot"
 
 type config struct {
 	RelayAddr  string   `json:"relay_addr"`
@@ -417,6 +423,10 @@ func runWebSocketPools(ctx context.Context, cfg config) error {
 	const slots = 4
 	var wg sync.WaitGroup
 	relayAddrs := cfg.relayAddresses()
+	agentID, err := loadOrCreateAgentID()
+	if err != nil {
+		log.Printf("using temporary agent identity: %v", err)
+	}
 	log.Printf("starting websocket agent pools for %d relay URL(s)", len(relayAddrs))
 	for _, relayAddr := range relayAddrs {
 		relayCfg := cfg.withRelayAddress(relayAddr)
@@ -424,7 +434,7 @@ func runWebSocketPools(ctx context.Context, cfg config) error {
 			wg.Add(1)
 			go func(slot int, slotCfg config) {
 				defer wg.Done()
-				runWebSocketSlot(ctx, slotCfg, slot)
+				runWebSocketSlot(ctx, slotCfg, slot, agentID)
 			}(i+1, relayCfg)
 		}
 	}
@@ -433,12 +443,12 @@ func runWebSocketPools(ctx context.Context, cfg config) error {
 	return nil
 }
 
-func runWebSocketSlot(ctx context.Context, cfg config, slot int) {
+func runWebSocketSlot(ctx context.Context, cfg config, slot int, agentID string) {
 	minBackoff, _ := time.ParseDuration(cfg.MinBackoff)
 	maxBackoff, _ := time.ParseDuration(cfg.MaxBackoff)
 	backoff := minBackoff
 	for ctx.Err() == nil {
-		err := runWebSocketOnce(ctx, cfg, slot)
+		err := runWebSocketOnce(ctx, cfg, slot, agentID)
 		if ctx.Err() != nil {
 			return
 		}
@@ -457,8 +467,13 @@ func runWebSocketSlot(ctx context.Context, cfg config, slot int) {
 	}
 }
 
-func runWebSocketOnce(ctx context.Context, cfg config, slot int) error {
-	ws, err := tunnel.DialWebSocket(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleAgent, "")
+func runWebSocketOnce(ctx context.Context, cfg config, slot int, agentID string) error {
+	headers := http.Header{}
+	if agentID != "" {
+		headers.Set(agentIDHeader, agentID)
+		headers.Set(agentSlotHeader, strconv.Itoa(slot))
+	}
+	ws, err := tunnel.DialWebSocketWithHeaders(ctx, cfg.RelayAddr, cfg.Proxy, tunnel.RoleAgent, "", headers)
 	if err != nil {
 		return err
 	}
@@ -472,6 +487,78 @@ func runWebSocketOnce(ctx context.Context, cfg config, slot int) error {
 	stream := tunnel.WebSocketNetConn(ctx, ws)
 	handleStream(ctx, stream, cfg.RDPAddr)
 	return nil
+}
+
+func loadOrCreateAgentID() (string, error) {
+	path, pathErr := agentIDPath()
+	if pathErr == nil {
+		if data, err := os.ReadFile(path); err == nil {
+			if id := cleanAgentIdentity(string(data)); id != "" {
+				return id, nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			if id, genErr := randomAgentID(); genErr == nil {
+				return id, fmt.Errorf("read agent identity: %w", err)
+			}
+			return "", fmt.Errorf("read agent identity: %w", err)
+		}
+	}
+
+	id, err := randomAgentID()
+	if err != nil {
+		if pathErr != nil {
+			return "", fmt.Errorf("%v; generate agent identity: %w", pathErr, err)
+		}
+		return "", err
+	}
+	if pathErr != nil {
+		return id, pathErr
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return id, fmt.Errorf("create agent identity directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(id+"\n"), 0600); err != nil {
+		return id, fmt.Errorf("write agent identity: %w", err)
+	}
+	return id, nil
+}
+
+func agentIDPath() (string, error) {
+	base := strings.TrimSpace(os.Getenv("ProgramData"))
+	if base == "" {
+		base = strings.TrimSpace(os.Getenv("APPDATA"))
+	}
+	if base == "" {
+		dir, err := os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
+		base = dir
+	}
+	return filepath.Join(base, "DeskFerry", "agent-id"), nil
+}
+
+func randomAgentID() (string, error) {
+	var data [16]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(data[:]), nil
+}
+
+func cleanAgentIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	for _, r := range value {
+		if b.Len() >= 64 {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func selfTest(parent context.Context, cfg config) error {
